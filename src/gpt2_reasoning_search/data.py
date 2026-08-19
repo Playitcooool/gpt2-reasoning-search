@@ -50,37 +50,42 @@ class ExactTokenMixture:
     def _remaining(self, source: str) -> int:
         return self.quotas[source] - getattr(self.state, f"{source}_tokens")
 
-    def _choose_source(self) -> str:
-        remaining_total = self._remaining("reasoning") + self._remaining("general")
-        if remaining_total <= 0:
-            raise StopIteration
-        reasoning_deficit = self._remaining("reasoning") / max(1, self.quotas["reasoning"])
-        general_deficit = self._remaining("general") / max(1, self.quotas["general"])
-        if self._remaining("reasoning") > 0 and reasoning_deficit >= general_deficit:
-            return "reasoning"
-        return "general"
-
-    def take(self, count: int) -> np.ndarray:
-        if count <= 0:
-            raise ValueError("count must be positive")
+    def _take_source(self, source: str, count: int) -> list[np.ndarray]:
         pieces: list[np.ndarray] = []
-        while count and self.state.total_tokens < sum(self.quotas.values()):
-            source = self._choose_source()
-            remaining = min(count, self._remaining(source))
-            values = self.sources[source]
-            if not len(values):
-                raise ValueError(f"{source} token source is empty")
-            cursor_name = f"{source}_cursor"
+        values = self.sources[source]
+        if count and not len(values):
+            raise ValueError(f"{source} token source is empty")
+        cursor_name = f"{source}_cursor"
+        while count:
             cursor = getattr(self.state, cursor_name)
-            take_now = min(remaining, len(values) - cursor)
+            take_now = min(count, len(values) - cursor)
             pieces.append(values[cursor : cursor + take_now])
             setattr(self.state, cursor_name, (cursor + take_now) % len(values))
             setattr(
                 self.state, f"{source}_tokens", getattr(self.state, f"{source}_tokens") + take_now
             )
             count -= take_now
-        if not pieces:
+        return pieces
+
+    def take(self, count: int) -> np.ndarray:
+        if count <= 0:
+            raise ValueError("count must be positive")
+        total_quota = sum(self.quotas.values())
+        emitted = self.state.total_tokens
+        actual_count = min(count, total_quota - emitted)
+        if actual_count <= 0:
             raise StopIteration
+        target_reasoning = round(
+            (emitted + actual_count) * self.quotas["reasoning"] / total_quota
+        )
+        reasoning_count = target_reasoning - self.state.reasoning_tokens
+        general_count = actual_count - reasoning_count
+        if not 0 <= reasoning_count <= self._remaining("reasoning"):
+            raise RuntimeError("reasoning mixture state is inconsistent with configured quota")
+        if not 0 <= general_count <= self._remaining("general"):
+            raise RuntimeError("general mixture state is inconsistent with configured quota")
+        pieces = self._take_source("reasoning", reasoning_count)
+        pieces.extend(self._take_source("general", general_count))
         return np.concatenate(pieces)
 
     def batches(

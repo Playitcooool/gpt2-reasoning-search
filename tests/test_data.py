@@ -28,6 +28,68 @@ def test_exact_mixture_hits_integer_quotas_and_cycles_sources() -> None:
         mixture.take(1)
 
 
+def test_mixture_matches_configured_ratio_at_multiple_cumulative_prefixes() -> None:
+    mixture = ExactTokenMixture(
+        reasoning=np.arange(100, 120, dtype=np.int64),
+        general=np.arange(200, 220, dtype=np.int64),
+        total_tokens=100,
+        reasoning_ratio=0.7,
+    )
+    emitted = 0
+
+    for chunk_size in (1, 2, 4, 8, 13, 17, 23, 32):
+        chunk = mixture.take(chunk_size)
+        emitted += chunk_size
+
+        assert len(chunk) == chunk_size
+        assert mixture.state.total_tokens == emitted
+        assert abs(mixture.state.reasoning_tokens - emitted * 0.7) <= 0.5 + 1e-12
+        assert mixture.state.general_tokens == emitted - mixture.state.reasoning_tokens
+
+    assert emitted == 100
+
+
+@pytest.mark.parametrize(
+    ("ratio", "reasoning", "general", "expected_reasoning", "expected_general"),
+    [
+        (0.0, np.array([], dtype=np.int64), np.array([20, 21]), 0, 9),
+        (1.0, np.array([10, 11], dtype=np.int64), np.array([], dtype=np.int64), 9, 0),
+    ],
+)
+def test_mixture_supports_zero_and_full_reasoning_boundaries(
+    ratio: float,
+    reasoning: np.ndarray,
+    general: np.ndarray,
+    expected_reasoning: int,
+    expected_general: int,
+) -> None:
+    mixture = ExactTokenMixture(reasoning, general, total_tokens=9, reasoning_ratio=ratio)
+
+    chunks = [mixture.take(2), mixture.take(3), mixture.take(4)]
+
+    assert sum(len(chunk) for chunk in chunks) == 9
+    assert mixture.state.reasoning_tokens == expected_reasoning
+    assert mixture.state.general_tokens == expected_general
+    assert mixture.state.total_tokens == 9
+
+
+def test_mixture_wraparound_preserves_source_order_and_cursors() -> None:
+    mixture = ExactTokenMixture(
+        reasoning=np.array([10, 11], dtype=np.int64),
+        general=np.array([20], dtype=np.int64),
+        total_tokens=10,
+        reasoning_ratio=0.7,
+    )
+
+    first = mixture.take(4)
+    second = mixture.take(6)
+
+    np.testing.assert_array_equal(first, np.array([10, 11, 10, 20]))
+    np.testing.assert_array_equal(second, np.array([11, 10, 11, 10, 20, 20]))
+    assert mixture.state.reasoning_cursor == 1
+    assert mixture.state.general_cursor == 0
+
+
 def test_mixture_resume_state_reproduces_uninterrupted_suffix() -> None:
     reasoning = np.arange(100, 107, dtype=np.int64)
     general = np.arange(200, 205, dtype=np.int64)
@@ -42,6 +104,32 @@ def test_mixture_resume_state_reproduces_uninterrupted_suffix() -> None:
     assert prefix.size + actual_suffix.size == 24
     np.testing.assert_array_equal(actual_suffix, expected_suffix)
     assert resumed.state_dict() == uninterrupted.state_dict()
+
+
+def test_resumed_mixture_keeps_exact_prefix_ratio_across_later_chunks() -> None:
+    reasoning = np.arange(100, 104, dtype=np.int64)
+    general = np.arange(200, 203, dtype=np.int64)
+    original = ExactTokenMixture(reasoning, general, total_tokens=100, reasoning_ratio=0.7)
+    original.take(9)
+    restored_state = MixtureState(**original.state_dict())
+    resumed = ExactTokenMixture(
+        reasoning,
+        general,
+        total_tokens=100,
+        reasoning_ratio=0.7,
+        state=restored_state,
+    )
+
+    emitted = 9
+    for chunk_size in (1, 5, 11, 21, 53):
+        expected = original.take(chunk_size)
+        actual = resumed.take(chunk_size)
+        emitted += chunk_size
+
+        np.testing.assert_array_equal(actual, expected)
+        assert resumed.state.reasoning_tokens == round(emitted * 0.7)
+        assert resumed.state.general_tokens == emitted - round(emitted * 0.7)
+        assert resumed.state_dict() == original.state_dict()
 
 
 def test_batches_have_requested_packed_shape_and_drop_incomplete_tail() -> None:
@@ -64,7 +152,7 @@ def test_mixture_rejects_invalid_inputs() -> None:
         ExactTokenMixture(np.array([1.0]), np.array([2]), 2, 0.5)
     mixture = ExactTokenMixture(np.array([], dtype=np.int64), np.array([2]), 2, 0.5)
     with pytest.raises(ValueError, match="empty"):
-        mixture.take(1)
+        mixture.take(2)
     with pytest.raises(ValueError, match="positive"):
         ExactTokenMixture(np.array([1]), np.array([2]), 2, 0.5).take(0)
 
