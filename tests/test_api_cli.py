@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -79,5 +81,52 @@ def test_cli_help_lists_training_search_and_serving_commands() -> None:
         "sft-tools",
         "ask",
         "serve",
+        "experiment-plan",
+        "smoke-overfit",
+        "score-reasoning",
+        "score-grounded",
+        "compare-proxies",
     ):
         assert command in result.stdout
+
+
+def test_evaluation_and_plan_cli_commands_write_reports(tmp_path) -> None:
+    runner = CliRunner()
+    plan = tmp_path / "plan.json"
+    reasoning_input = tmp_path / "reasoning.jsonl"
+    reasoning_report = tmp_path / "reasoning-report.json"
+    grounded_input = tmp_path / "grounded.jsonl"
+    grounded_report = tmp_path / "grounded-report.json"
+    reasoning_input.write_text(
+        '{"task":"math","prediction":"The 4","answer":"4"}\n'
+    )
+    grounded_input.write_text(
+        '{"prediction":"Paris","answer":"Paris","queries":[],"retrieved_ids":[],'
+        '"supporting_ids":[],"cited_ids":[]}\n'
+    )
+
+    plan_result = runner.invoke(app, ["experiment-plan", "--output", str(plan)])
+    reasoning_result = runner.invoke(
+        app,
+        [
+            "score-reasoning",
+            str(reasoning_input),
+            "--output",
+            str(reasoning_report),
+        ],
+    )
+    grounded_result = runner.invoke(
+        app,
+        [
+            "score-grounded",
+            str(grounded_input),
+            "--output",
+            str(grounded_report),
+        ],
+    )
+
+    assert plan_result.exit_code == 0 and plan.is_file()
+    assert reasoning_result.exit_code == 0 and reasoning_report.is_file()
+    assert grounded_result.exit_code == 0 and grounded_report.is_file()
+    assert json.loads(reasoning_report.read_text())["exact_match"] == 1.0
+    assert json.loads(grounded_report.read_text())["answer_exact_match"] == 1.0

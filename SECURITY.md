@@ -1,0 +1,15 @@
+# Security notes
+
+Search results are untrusted. The controller neutralizes model control tokens in retrieved text,
+wraps observations in an explicit untrusted-evidence boundary, limits calls to three, validates the
+JSON schema, and accepts citations only for results observed in the current request. These controls
+reduce prompt-injection risk but do not eliminate it; do not give this prototype write-capable tools
+or sensitive credentials.
+
+The Python verifier runs candidates in a temporary directory, in isolated interpreter mode, with a
+timeout. This is a correctness filter, not a hardened security sandbox. Run untrusted code inside a
+network-disabled container or microVM with strict CPU, memory, process, and filesystem limits.
+
+Keep `BRAVE_SEARCH_API_KEY` in the environment or a secret manager. Never commit it. Live-search
+responses can change and must not be used for reproducible benchmark numbers; use the pinned local
+Wikipedia index for reported experiments.

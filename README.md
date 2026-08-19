@@ -36,6 +36,8 @@ uv run gpt2-reasoning-search pretrain \
   --general-tokens data/processed/general.npy
 
 # Proxy mixture controls use --preset proxy-124m with --reasoning-ratio 0, 0.3, and 0.7.
+uv run gpt2-reasoning-search experiment-plan
+uv run gpt2-reasoning-search smoke-overfit --device cpu
 
 # 4. Build deterministic retrieval and tool trajectories.
 uv run gpt2-reasoning-search build-index data/raw/wikipedia.jsonl
@@ -66,3 +68,21 @@ uv run gpt2-reasoning-search serve \
 searches. Live web search is enabled only when `BRAVE_SEARCH_API_KEY` is present. Retrieved text is
 treated as untrusted evidence, model control tokens in results are neutralized, and returned
 citations are restricted to source identifiers actually observed during the request.
+
+## Evaluation
+
+The scoring commands accept JSONL so benchmark generation can run independently or be distributed.
+Reasoning rows contain `task`, `prediction`, and `answer`. Grounded rows contain those answer fields
+plus `queries`, `retrieved_ids`, `supporting_ids`, `cited_ids`, `valid_tool_calls`, `search_required`,
+and `answer_found`.
+
+```bash
+uv run gpt2-reasoning-search score-reasoning artifacts/reasoning-predictions.jsonl
+uv run gpt2-reasoning-search score-grounded artifacts/grounded-predictions.jsonl
+uv run gpt2-reasoning-search compare-proxies \
+  checkpoints/proxy-r0 checkpoints/proxy-r30 checkpoints/proxy-r70
+```
+
+Use a held-out FineWeb-Edu split for loss/perplexity; contamination-filtered GSM8K, MATH-500,
+HumanEval+/MBPP, and logical-reasoning records for reasoning; and a frozen local-index HotpotQA-style
+set for retrieval. Reports must show the proxy controls even if the 70% mixture loses.

@@ -10,6 +10,16 @@ import typer
 from .agent import SearchAgent
 from .api import create_app
 from .config import ModelConfig, TrainConfig
+from .evaluation import (
+    compare_proxy_runs,
+    score_grounded_records,
+    score_reasoning_records,
+    write_report,
+)
+from .evaluation import (
+    stream_jsonl as stream_evaluation_jsonl,
+)
+from .experiment import write_experiment_plan
 from .model import GPT2ReasoningModel
 from .prepare import prepare_token_corpora
 from .runner import ModelRunner
@@ -21,6 +31,7 @@ from .search import (
     stream_jsonl_documents,
 )
 from .sft import fine_tune_tools
+from .smoke import tiny_overfit
 from .tokenizer import load_tokenizer, train_tokenizer
 from .train import train
 from .trajectories import generate_trajectories, stream_jsonl
@@ -174,3 +185,56 @@ def serve_command(
     import uvicorn
 
     uvicorn.run(create_app(_load_agent(checkpoint, tokenizer_path, index)), host=host, port=port)
+
+
+@app.command("experiment-plan")
+def experiment_plan_command(
+    output: Path = typer.Option(Path("artifacts/one-h100-plan.json")),
+) -> None:
+    """Write the fixed proxy-and-main schedule for one H100 day."""
+    write_experiment_plan(output)
+    typer.echo(str(output))
+
+
+@app.command("smoke-overfit")
+def smoke_overfit_command(
+    steps: int = typer.Option(40, min=1), device: str = typer.Option("cpu")
+) -> None:
+    """Verify that a tiny model can overfit reasoning and tool-token patterns."""
+    result = tiny_overfit(steps=steps, device=device)
+    typer.echo(json.dumps(result, indent=2))
+    if not result["passed"]:
+        raise typer.Exit(1)
+
+
+@app.command("score-reasoning")
+def score_reasoning_command(
+    predictions: Path = typer.Argument(..., exists=True, readable=True),
+    output: Path = typer.Option(Path("artifacts/reasoning-report.json")),
+) -> None:
+    """Score JSONL predictions for GSM8K, MATH, code, and logic tasks."""
+    report = score_reasoning_records(stream_evaluation_jsonl(predictions))
+    write_report(report, output)
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("score-grounded")
+def score_grounded_command(
+    predictions: Path = typer.Argument(..., exists=True, readable=True),
+    output: Path = typer.Option(Path("artifacts/grounded-report.json")),
+) -> None:
+    """Score answer, retrieval, citation, and tool-use behavior."""
+    report = score_grounded_records(stream_evaluation_jsonl(predictions))
+    write_report(report, output)
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("compare-proxies")
+def compare_proxies_command(
+    runs: list[Path] = typer.Argument(..., exists=True),
+    output: Path = typer.Option(Path("artifacts/proxy-comparison.json")),
+) -> None:
+    """Compare the matched 0%, 30%, and 70% proxy training runs."""
+    report = compare_proxy_runs(runs)
+    write_report(report, output)
+    typer.echo(json.dumps(report, indent=2))
