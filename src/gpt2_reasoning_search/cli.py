@@ -1,15 +1,29 @@
 """Command-line entry point."""
 
+import asyncio
 import json
+import os
 from pathlib import Path
 
 import typer
 
+from .agent import SearchAgent
+from .api import create_app
 from .config import ModelConfig, TrainConfig
 from .model import GPT2ReasoningModel
 from .prepare import prepare_token_corpora
+from .runner import ModelRunner
+from .schemas import AnswerRequest
+from .search import (
+    BraveWebSearchProvider,
+    LocalWikipediaSearchProvider,
+    build_wikipedia_index,
+    stream_jsonl_documents,
+)
+from .sft import fine_tune_tools
 from .tokenizer import load_tokenizer, train_tokenizer
 from .train import train
+from .trajectories import generate_trajectories, stream_jsonl
 
 app = typer.Typer(
     name="gpt2-reasoning-search",
@@ -86,3 +100,77 @@ def pretrain_command(
         time_budget_hours=time_budget_hours,
     )
     typer.echo(str(train(config, resume_from)))
+
+
+@app.command("build-index")
+def build_index_command(
+    documents: Path = typer.Argument(..., exists=True, readable=True),
+    output: Path = typer.Option(Path("artifacts/wiki-index")),
+) -> None:
+    """Build a local BM25 index from Wikipedia-style JSONL documents."""
+    count = build_wikipedia_index(stream_jsonl_documents(documents), output)
+    typer.echo(json.dumps({"chunks": count, "index": str(output)}))
+
+
+@app.command("make-trajectories")
+def make_trajectories_command(
+    examples: Path = typer.Argument(..., exists=True, readable=True),
+    output: Path = typer.Option(Path("data/processed/tool-trajectories.jsonl")),
+) -> None:
+    """Create normalized, evidence-grounded tool-use trajectories."""
+    count = generate_trajectories(stream_jsonl(examples), output)
+    typer.echo(json.dumps({"examples": count, "output": str(output)}))
+
+
+@app.command("sft-tools")
+def sft_tools_command(
+    checkpoint: Path = typer.Option(..., exists=True),
+    tokenizer_path: Path = typer.Option(..., exists=True),
+    trajectories: Path = typer.Option(..., exists=True),
+    output: Path = typer.Option(Path("checkpoints/tool-sft")),
+    epochs: int = typer.Option(1, min=1),
+) -> None:
+    """Fine-tune a pretrained checkpoint on search trajectories."""
+    typer.echo(
+        str(fine_tune_tools(checkpoint, tokenizer_path, trajectories, output, epochs=epochs))
+    )
+
+
+def _load_agent(
+    checkpoint: Path, tokenizer_path: Path, index: Path, enable_web: bool = True
+) -> SearchAgent:
+    runner = ModelRunner(checkpoint, tokenizer_path)
+    local = LocalWikipediaSearchProvider(index)
+    key = os.getenv("BRAVE_SEARCH_API_KEY")
+    web = BraveWebSearchProvider(key) if key and enable_web else None
+    return SearchAgent(runner.generate, local, web)
+
+
+@app.command("ask")
+def ask_command(
+    query: str = typer.Argument(...),
+    checkpoint: Path = typer.Option(..., exists=True),
+    tokenizer_path: Path = typer.Option(..., exists=True),
+    index: Path = typer.Option(..., exists=True),
+    search_mode: str = typer.Option("auto"),
+    max_searches: int = typer.Option(3, min=0, max=3),
+) -> None:
+    """Answer one question using the bounded search controller."""
+    agent = _load_agent(checkpoint, tokenizer_path, index)
+    request = AnswerRequest(query=query, search_mode=search_mode, max_searches=max_searches)  # type: ignore[arg-type]
+    response = asyncio.run(agent.answer(request))
+    typer.echo(response.model_dump_json(indent=2))
+
+
+@app.command("serve")
+def serve_command(
+    checkpoint: Path = typer.Option(..., exists=True),
+    tokenizer_path: Path = typer.Option(..., exists=True),
+    index: Path = typer.Option(..., exists=True),
+    host: str = typer.Option("127.0.0.1"),
+    port: int = typer.Option(8000),
+) -> None:
+    """Serve the health and grounded-answer HTTP endpoints."""
+    import uvicorn
+
+    uvicorn.run(create_app(_load_agent(checkpoint, tokenizer_path, index)), host=host, port=port)
