@@ -1,0 +1,18 @@
+{
+  "allenai/big-reasoning-traces": {
+    "revision": "5cc07ee9e71a1a642aeb130438452d7e63c5cc5e",
+    "license": "per-source permissive licenses; see upstream dataset card",
+    "role": "reasoning"
+  },
+  "open-r1/OpenR1-Math-220k": {
+    "revision": "e4e141ec9dea9f8326f4d347be56105859b2bd68",
+    "license": "Apache-2.0",
+    "role": "verified-math"
+  },
+  "HuggingFaceFW/fineweb-edu": {
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+    "license": "ODC-By-1.0; also subject to Common Crawl terms",
+    "role": "general-text",
+    "config": "sample-10BT"
+  }
+}
