@@ -1,0 +1,46 @@
+[project]
+name = "gpt2-reasoning-search"
+version = "0.1.0"
+description = "Train a small GPT-2-style reasoning model and ground it with search tools"
+authors = [
+    { name = "Playitcool_", email = "129354153+Playitcooool@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "bm25s>=0.2.14",
+    "datasets>=4.0.0",
+    "fastapi>=0.116.0",
+    "httpx>=0.28.0",
+    "numpy>=2.0.0",
+    "pydantic-settings>=2.10.0",
+    "safetensors>=0.5.0",
+    "tokenizers>=0.21.0",
+    "torch>=2.7.0",
+    "typer>=0.16.0",
+    "uvicorn>=0.35.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+    "pytest-cov>=6.2.0",
+    "ruff>=0.12.0",
+]
+
+[project.scripts]
+gpt2-reasoning-search = "gpt2_reasoning_search.cli:app"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
