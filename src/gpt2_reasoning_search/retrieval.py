@@ -223,6 +223,7 @@ class LocalWikipediaSearchProvider:
         dense_encoder: DenseEncoder | None = None,
         reranker=None,
         enable_reranker: bool = False,
+        model_device: str | None = None,
     ) -> None:
         self.index = tantivy.Index.open(str(index_directory / "lexical"))
         self.index.reload()
@@ -234,11 +235,13 @@ class LocalWikipediaSearchProvider:
         self.dense_index = VectorIndex.restore(dense_path) if dense_path.exists() else None
         if self.dense_index is not None and dense_encoder is None:
             model = self.manifest["embedding_model"]
-            dense_encoder = SentenceTransformerEncoder(model["name"], model["revision"])
+            dense_encoder = SentenceTransformerEncoder(
+                model["name"], model["revision"], model_device
+            )
         self.dense_encoder = dense_encoder
         if enable_reranker and reranker is None:
             model = self.manifest["reranker_model"]
-            reranker = CrossEncoderReranker(model["name"], model["revision"])
+            reranker = CrossEncoderReranker(model["name"], model["revision"], model_device)
         self.reranker = reranker
 
     def _metadata_rows(self, row_ids: Sequence[int]) -> dict[int, tuple[str, str, str, str]]:

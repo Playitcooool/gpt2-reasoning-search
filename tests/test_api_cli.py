@@ -79,6 +79,7 @@ def test_cli_help_lists_training_search_and_serving_commands() -> None:
         "build-index",
         "make-trajectories",
         "sft-tools",
+        "rl-search",
         "ask",
         "serve",
         "experiment-plan",
@@ -88,6 +89,28 @@ def test_cli_help_lists_training_search_and_serving_commands() -> None:
         "compare-proxies",
     ):
         assert command in result.stdout
+
+
+def test_rl_search_help_registers_training_options() -> None:
+    result = CliRunner().invoke(app, ["rl-search", "--help"])
+
+    assert result.exit_code == 0
+    for option in (
+        "--checkpoint",
+        "--tokenizer-path",
+        "--prompts",
+        "--index",
+        "--output",
+        "--epochs",
+        "--group-size",
+        "--max-searches",
+        "--learning-rate",
+        "--kl-coefficient",
+        "--resume-from",
+        "--enable-rerank",
+        "--retrieval-dev",
+    ):
+        assert option in result.stdout
 
 
 def test_evaluation_and_plan_cli_commands_write_reports(tmp_path) -> None:

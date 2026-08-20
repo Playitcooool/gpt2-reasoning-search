@@ -29,6 +29,7 @@ from .retrieval import (
     SentenceTransformerEncoder,
     build_wikipedia_index,
 )
+from .rl import SearchRLConfig, train_search_rl
 from .runner import ModelRunner
 from .schemas import AnswerRequest
 from .search import stream_jsonl_documents
@@ -181,6 +182,41 @@ def sft_tools_command(
             )
         )
     )
+
+
+@app.command("rl-search")
+def rl_search_command(
+    checkpoint: Path = typer.Option(..., exists=True),
+    tokenizer_path: Path = typer.Option(..., exists=True),
+    prompts: Path = typer.Option(..., exists=True),
+    index: Path = typer.Option(..., exists=True),
+    output: Path = typer.Option(Path("checkpoints/search-rl")),
+    epochs: int = typer.Option(1, min=1),
+    group_size: int = typer.Option(4, min=2),
+    max_searches: int = typer.Option(3, min=0, max=3),
+    learning_rate: float = typer.Option(1e-6, min=1e-9),
+    kl_coefficient: float = typer.Option(0.02, min=0.0),
+    resume_from: Path | None = typer.Option(None, exists=True),
+    enable_reranker: bool = typer.Option(False),
+    retrieval_device: str = typer.Option("cpu"),
+) -> None:
+    """Optimize QA and search behavior with grouped online RL rollouts."""
+    config = SearchRLConfig(
+        checkpoint_directory=checkpoint,
+        tokenizer_path=tokenizer_path,
+        prompts_path=prompts,
+        index_directory=index,
+        output_directory=output,
+        epochs=epochs,
+        group_size=group_size,
+        max_searches=max_searches,
+        learning_rate=learning_rate,
+        kl_coefficient=kl_coefficient,
+        resume_from=resume_from,
+        enable_reranker=enable_reranker,
+        retrieval_device=retrieval_device,
+    )
+    typer.echo(str(train_search_rl(config)))
 
 
 def _load_agent(
