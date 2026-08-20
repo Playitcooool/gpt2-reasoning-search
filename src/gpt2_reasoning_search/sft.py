@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 from tokenizers import Tokenizer
 
+from .checkpoint import load_model_weights
 from .config import ModelConfig
 from .model import GPT2ReasoningModel
 
@@ -50,9 +51,7 @@ def fine_tune_tools(
     config = ModelConfig(**state["config"]["model"])
     device = torch.device("cuda")
     model = GPT2ReasoningModel(config).to(device=device, dtype=torch.bfloat16)
-    model.load_state_dict(
-        torch.load(checkpoint_directory / "model.pt", map_location=device, weights_only=True)
-    )
+    load_model_weights(checkpoint_directory, model, device)
     tokenizer = Tokenizer.from_file(str(tokenizer_path))
     examples = []
     with trajectories_path.open() as handle:
@@ -75,6 +74,9 @@ def fine_tune_tools(
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
     output_directory.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), output_directory / "model.pt")
+    from safetensors.torch import save_model
+
+    save_model(model, str(output_directory / "model.safetensors"), metadata={"format": "pt"})
+    state["format_version"] = 2
     (output_directory / "state.json").write_text(json.dumps(state, indent=2) + "\n")
     return output_directory

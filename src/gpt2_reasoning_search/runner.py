@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 from tokenizers import Tokenizer
 
+from .checkpoint import load_model_weights
 from .config import ModelConfig
 from .model import GPT2ReasoningModel
 
@@ -26,11 +27,7 @@ class ModelRunner:
         self.device = resolved_device
         self.tokenizer = Tokenizer.from_file(str(tokenizer_path))
         self.model = GPT2ReasoningModel(model_config).to(resolved_device)
-        self.model.load_state_dict(
-            torch.load(
-                checkpoint_directory / "model.pt", map_location=resolved_device, weights_only=True
-            )
-        )
+        load_model_weights(checkpoint_directory, self.model, resolved_device)
         self.model.eval()
 
     def generate(self, prompt: str, max_new_tokens: int = 512) -> tuple[str, int, int]:

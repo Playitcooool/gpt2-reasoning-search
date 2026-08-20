@@ -7,8 +7,11 @@ from gpt2_reasoning_search.model import GPT2ReasoningModel
 
 def _architectural_parameter_count(config: ModelConfig) -> int:
     embedding = config.vocab_size * config.d_model
+    attention = config.d_model * (
+        config.d_model + 2 * config.n_kv_heads * config.head_dim
+    ) + config.d_model * config.d_model
     per_block = (
-        4 * config.d_model * config.d_model
+        attention
         + 3 * config.d_model * config.intermediate_size
         + 2 * config.d_model
     )
@@ -67,6 +70,41 @@ def test_preset_sizes_and_head_dimensions() -> None:
         ModelConfig.preset("missing")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="divisible"):
         _ = ModelConfig(d_model=10, n_heads=3).head_dim
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"n_heads": 0},
+        {"n_kv_heads": 0},
+        {"n_heads": 4, "n_kv_heads": 3},
+        {"d_model": 0},
+    ],
+)
+def test_model_config_rejects_invalid_attention_dimensions(overrides: dict[str, int]) -> None:
+    with pytest.raises(ValueError):
+        ModelConfig(**overrides)
+
+
+def test_gqa_cache_shapes() -> None:
+    config = ModelConfig(
+        vocab_size=32,
+        max_seq_len=8,
+        n_layers=2,
+        d_model=24,
+        n_heads=6,
+        n_kv_heads=2,
+        intermediate_size=48,
+    )
+    model = GPT2ReasoningModel(config).eval()
+
+    output = model(torch.randint(0, config.vocab_size, (3, 5)), use_cache=True)
+
+    assert output.past_key_values is not None
+    assert len(output.past_key_values) == config.n_layers
+    for key, value in output.past_key_values:
+        assert key.shape == (3, config.n_kv_heads, 5, config.head_dim)
+        assert value.shape == key.shape
 
 
 def test_train_config_validates_ratio_and_computes_step_tokens(tmp_path) -> None:
