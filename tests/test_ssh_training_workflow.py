@@ -62,11 +62,17 @@ def _write_config(project: Path, tmp_path: Path, **overrides: object) -> Path:
         "REASONING_TOKEN_CAP": 100,
         "GENERAL_TOKEN_CAP": 100,
         "LEXICAL_ONLY": 1,
+        "PREPARE_IN_JOB": 0,
+        "RUN_SMOKE": 1,
+        "RUN_PROXIES": 0,
+        "RUN_PRETRAIN": 1,
+        "RUN_SFT": 1,
+        "RUN_RL": 1,
         "CHECKPOINT_ROOT": outputs,
         "PROXY_TOKEN_CAP": 60,
         "PROXY_HOURS": 1.5,
-        "MAIN_TOKEN_CAP": 100,
-        "MAIN_HOURS": 14,
+        "MAIN_TOKEN_CAP": 750_000_000,
+        "MAIN_HOURS": 4.5,
         "MAIN_OUTPUT": outputs / "main",
         "SFT_OUTPUT": outputs / "sft",
         "SFT_EPOCHS": 1,
@@ -81,7 +87,7 @@ def _write_config(project: Path, tmp_path: Path, **overrides: object) -> Path:
         "SLURM_GRES": "gpu:h100:1",
         "SLURM_CPUS": 8,
         "SLURM_MEMORY": "64G",
-        "SLURM_TIME": "12:00:00",
+        "SLURM_TIME": "08:00:00",
     }
     values.update(overrides)
     path = project / "config" / "ssh.env"
@@ -128,6 +134,20 @@ def _complete_checkpoint(path: Path) -> None:
     path.mkdir(parents=True)
     for name in ("model.safetensors", "optimizer.pt", "scheduler.pt", "rng.pt", "state.json"):
         (path / name).touch()
+
+
+def _create_prepared_inputs(tmp_path: Path) -> None:
+    inputs = tmp_path / "inputs"
+    inputs.mkdir(exist_ok=True)
+    for name in (
+        "tokenizer.json",
+        "reasoning.bin",
+        "general.bin",
+        "trajectories.jsonl",
+        "rl.jsonl",
+    ):
+        (inputs / name).touch()
+    (inputs / "wiki-index").mkdir(exist_ok=True)
 
 
 def _wait_for_file(path: Path) -> str:
@@ -331,7 +351,7 @@ def test_slurm_submission_uses_configured_resources_and_validated_stage(tmp_path
         "--gres=gpu:h100:1",
         "--cpus-per-task=8",
         "--mem=64G",
-        "--time=12:00:00",
+        "--time=08:00:00",
         "--partition=gpu-school",
         "--account=class-account",
     ):
@@ -456,6 +476,126 @@ def test_completed_downstream_stage_skips_missing_inputs_and_uv(tmp_path: Path, 
     assert result.returncode == 0
     assert "already complete" in result.stdout
     assert not calls.exists()
+
+
+def test_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    config = _write_config(project, tmp_path, PREPARE_IN_JOB=0)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    result = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "all"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert result.returncode == 2
+    assert "Missing required file" in result.stdout + result.stderr
+    assert "reasoning.bin" in result.stdout + result.stderr
+    assert not calls.exists()
+
+
+def test_all_honors_disabled_stage_gates_and_optional_proxy_gate(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    _create_prepared_inputs(tmp_path)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+    disabled = {
+        "PREPARE_IN_JOB": 0,
+        "RUN_SMOKE": 0,
+        "RUN_PROXIES": 0,
+        "RUN_PRETRAIN": 0,
+        "RUN_SFT": 0,
+        "RUN_RL": 0,
+    }
+    config = _write_config(project, tmp_path, **disabled)
+
+    skipped = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "all"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert skipped.returncode == 0, skipped.stderr
+    assert "Completed stage: all" in skipped.stdout
+    assert not calls.exists()
+
+    config = _write_config(project, tmp_path, **(disabled | {"RUN_PROXIES": 1}))
+    proxies = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "all"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert proxies.returncode == 0, proxies.stderr
+    assert calls.read_text().count("ARG <pretrain>") == 3
+
+
+def test_all_can_opt_into_preparation_inside_the_job(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    _create_prepared_inputs(tmp_path)
+    inputs = tmp_path / "inputs"
+    (inputs / "trajectories.jsonl").unlink()
+    (inputs / "grounded.jsonl").touch()
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+    config = _write_config(
+        project,
+        tmp_path,
+        PREPARE_IN_JOB=1,
+        RUN_SMOKE=0,
+        RUN_PROXIES=0,
+        RUN_PRETRAIN=0,
+        RUN_SFT=0,
+        RUN_RL=0,
+    )
+
+    result = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "all"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ARG <make-trajectories>" in calls.read_text()
+
+
+def test_default_cluster_config_and_docs_describe_eight_hour_profile() -> None:
+    example = (ROOT / "config" / "ssh.env.example").read_text()
+    launcher = LAUNCHER.read_text()
+    slurm_template = (ROOT / "scripts" / "slurm" / "train_h100.sbatch").read_text()
+    docs = (ROOT / "README.md").read_text() + (ROOT / "docs" / "SSH_TRAINING.md").read_text()
+
+    for setting in (
+        "PREPARE_IN_JOB=0",
+        "RUN_SMOKE=1",
+        "RUN_PROXIES=0",
+        "RUN_PRETRAIN=1",
+        "RUN_SFT=1",
+        "RUN_RL=1",
+        "MAIN_TOKEN_CAP=750000000",
+        "MAIN_HOURS=4.5",
+        "RL_GROUP_SIZE=2",
+        'SLURM_TIME="08:00:00"',
+    ):
+        assert setting in example
+    assert "${SLURM_TIME:-08:00:00}" in launcher
+    assert "#SBATCH --time=08:00:00" in slurm_template
+    assert "eight-hour" in docs
+    assert "750M-token cap" in docs
+    assert "4.5 hours" in docs
 
 
 def test_config_is_ignored_and_documented_commands_match_launcher() -> None:

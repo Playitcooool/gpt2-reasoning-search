@@ -17,7 +17,7 @@ Easy SSH/H100 training
   ./train-ssh pretrain              Train or auto-resume the 350M base model
   ./train-ssh sft                   Train or auto-resume search-tool SFT
   ./train-ssh rl                    Train or auto-resume search RL with Qwen judge
-  ./train-ssh all                   Run smoke, proxies, pretrain, SFT, and RL
+  ./train-ssh all                   Run the eight-hour smoke, main, SFT, and RL profile
   ./train-ssh foreground STAGE      Run a stage in the current terminal
   ./train-ssh slurm STAGE           Submit a stage through sbatch
   ./train-ssh status                Show jobs, GPU state, checkpoints, and recent metrics
@@ -85,7 +85,7 @@ submit_slurm() {
     --gres="${SLURM_GRES:-gpu:1}"
     --cpus-per-task="${SLURM_CPUS:-16}"
     --mem="${SLURM_MEMORY:-128G}"
-    --time="${SLURM_TIME:-24:00:00}"
+    --time="${SLURM_TIME:-08:00:00}"
     --output="$PROJECT_ROOT/logs/slurm-%j.log"
     --export="ALL,SSH_TRAIN_CONFIG=$CONFIG_FILE"
   )

@@ -77,7 +77,7 @@ uv run gpt2-reasoning-search rl-search \
   --prompts data/rl/search-qa.jsonl \
   --index artifacts/wiki-index \
   --output checkpoints/search-rl \
-  --group-size 4 --max-searches 3 \
+  --group-size 2 --max-searches 3 \
   --llm-judge --judge-device cuda
 ```
 

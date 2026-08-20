@@ -203,7 +203,7 @@ def test_auxiliary_judge_defaults_and_ablation_are_documented() -> None:
 
 def test_h100_runbook_allocation_totals_exactly_one_day_and_includes_rl() -> None:
     runbook = (ROOT / "docs" / "H100_RUNBOOK.md").read_text()
-    allocation = runbook.split("## Suggested allocation", 1)[1].split(
+    allocation = runbook.split("## Original 24-hour allocation", 1)[1].split(
         "The trainer measures", 1
     )[0]
     hours = [float(value) for value in re.findall(r"(?:up to )?(\d+(?:\.\d+)?) hours?", allocation)]
@@ -211,7 +211,7 @@ def test_h100_runbook_allocation_totals_exactly_one_day_and_includes_rl() -> Non
     assert hours == [0.5, 4.5, 14.0, 1.5, 2.0, 1.5]
     assert sum(hours) == 24.0
     assert "Search RL: 2 hours" in allocation
-    assert "--output checkpoints/search-rl --group-size 4" in " ".join(runbook.split())
+    assert "--output checkpoints/search-rl --group-size 2" in " ".join(runbook.split())
 
     scheduled = one_h100_schedule()
     proxies = [run for run in scheduled if run.preset == "proxy-124m"]

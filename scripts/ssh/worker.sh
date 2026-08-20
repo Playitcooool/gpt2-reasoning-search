@@ -16,6 +16,20 @@ set -a
 source "$CONFIG_FILE"
 set +a
 
+# Existing config/ssh.env files are intentionally not overwritten by setup. Make an older config
+# follow the new eight-hour default unless the user explicitly selects a custom profile.
+if [[ "${TRAIN_PROFILE:-8h}" == "8h" ]]; then
+  : "${PREPARE_IN_JOB:=0}"
+  : "${RUN_SMOKE:=1}"
+  : "${RUN_PROXIES:=0}"
+  : "${RUN_PRETRAIN:=1}"
+  : "${RUN_SFT:=1}"
+  : "${RUN_RL:=1}"
+  MAIN_TOKEN_CAP=750000000
+  MAIN_HOURS=4.5
+  RL_GROUP_SIZE=2
+fi
+
 cd "$PROJECT_ROOT"
 mkdir -p logs artifacts checkpoints data/processed "$TRAIN_CACHE"
 export UV_CACHE_DIR="$TRAIN_CACHE/uv"
@@ -70,8 +84,11 @@ set_resume_args() {
   if [[ "${AUTO_RESUME:-1}" == "1" && ! -e "$output/final" ]]; then
     local checkpoint
     checkpoint="$(latest_checkpoint "$output" || true)"
-    [[ -n "$checkpoint" ]] && RESUME_ARGS=(--resume-from "$checkpoint")
+    if [[ -n "$checkpoint" ]]; then
+      RESUME_ARGS=(--resume-from "$checkpoint")
+    fi
   fi
+  return 0
 }
 
 run_doctor() {
@@ -122,24 +139,48 @@ run_prepare() {
   fi
   if [[ ! -f "$REASONING_TOKENS" || ! -f "$GENERAL_TOKENS" ]]; then
     local evaluation_args=()
-    [[ -f "$EVALUATION_PROMPTS" ]] && evaluation_args=(--evaluation-prompts "$EVALUATION_PROMPTS")
-    uv run --locked gpt2-reasoning-search prepare-data \
+    if [[ -f "$EVALUATION_PROMPTS" ]]; then
+      evaluation_args=(--evaluation-prompts "$EVALUATION_PROMPTS")
+    fi
+    local args=(uv run --locked gpt2-reasoning-search prepare-data \
       --tokenizer-path "$TOKENIZER_PATH" --manifest config/datasets.json \
       --output "$(dirname "$REASONING_TOKENS")" \
       --reasoning-token-cap "$REASONING_TOKEN_CAP" \
-      --general-token-cap "$GENERAL_TOKEN_CAP" "${evaluation_args[@]}"
+      --general-token-cap "$GENERAL_TOKEN_CAP")
+    if ((${#evaluation_args[@]} > 0)); then args+=("${evaluation_args[@]}"); fi
+    "${args[@]}"
   fi
   if [[ ! -d "$WIKI_INDEX" ]]; then
     require_file "$WIKIPEDIA_JSONL"
     local index_args=()
-    [[ "${LEXICAL_ONLY:-0}" == "1" ]] && index_args=(--lexical-only)
-    uv run --locked gpt2-reasoning-search build-index "$WIKIPEDIA_JSONL" \
-      --output "$WIKI_INDEX" --embedding-device cpu "${index_args[@]}"
+    if [[ "${LEXICAL_ONLY:-0}" == "1" ]]; then
+      index_args=(--lexical-only)
+    fi
+    local args=(uv run --locked gpt2-reasoning-search build-index "$WIKIPEDIA_JSONL" \
+      --output "$WIKI_INDEX" --embedding-device cpu)
+    if ((${#index_args[@]} > 0)); then args+=("${index_args[@]}"); fi
+    "${args[@]}"
   fi
   if [[ ! -f "$TRAJECTORIES" ]]; then
     require_file "$GROUNDED_QUESTIONS"
     uv run --locked gpt2-reasoning-search make-trajectories "$GROUNDED_QUESTIONS" \
       --output "$TRAJECTORIES"
+  fi
+}
+
+require_prepared() {
+  if [[ "${RUN_PRETRAIN:-1}" == "1" || "${RUN_PROXIES:-0}" == "1" ]]; then
+    require_file "$REASONING_TOKENS"
+    require_file "$GENERAL_TOKENS"
+  fi
+  if [[ "${RUN_SFT:-1}" == "1" ]]; then
+    require_file "$TOKENIZER_PATH"
+    require_file "$TRAJECTORIES"
+  fi
+  if [[ "${RUN_RL:-1}" == "1" ]]; then
+    require_file "$TOKENIZER_PATH"
+    require_dir "$WIKI_INDEX"
+    require_file "$RL_PROMPTS"
   fi
 }
 
@@ -156,10 +197,12 @@ run_pretrain_job() {
   require_file "$REASONING_TOKENS"
   require_file "$GENERAL_TOKENS"
   set_resume_args "$output"
-  uv run --locked gpt2-reasoning-search pretrain \
+  local args=(uv run --locked gpt2-reasoning-search pretrain \
     --reasoning-tokens "$REASONING_TOKENS" --general-tokens "$GENERAL_TOKENS" \
     --output "$output" --preset "$preset" --reasoning-ratio "$ratio" \
-    --max-tokens "$token_cap" --time-budget-hours "$hours" "${RESUME_ARGS[@]}"
+    --max-tokens "$token_cap" --time-budget-hours "$hours")
+  if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
+  "${args[@]}"
 }
 
 run_proxies() {
@@ -184,11 +227,13 @@ run_sft() {
   require_file "$TOKENIZER_PATH"
   require_file "$TRAJECTORIES"
   set_resume_args "$SFT_OUTPUT"
-  uv run --locked gpt2-reasoning-search sft-tools \
+  local args=(uv run --locked gpt2-reasoning-search sft-tools \
     --checkpoint "$MAIN_OUTPUT/final" --tokenizer-path "$TOKENIZER_PATH" \
     --trajectories "$TRAJECTORIES" --output "$SFT_OUTPUT" \
     --epochs "$SFT_EPOCHS" --micro-batch-size "$SFT_MICRO_BATCH" \
-    --gradient-accumulation-steps "$SFT_GRAD_ACCUM" "${RESUME_ARGS[@]}"
+    --gradient-accumulation-steps "$SFT_GRAD_ACCUM")
+  if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
+  "${args[@]}"
 }
 
 run_rl() {
@@ -202,12 +247,16 @@ run_rl() {
   require_dir "$WIKI_INDEX"
   set_resume_args "$RL_OUTPUT"
   local judge_args=(--llm-judge --judge-device cuda)
-  [[ "${USE_LLM_JUDGE:-1}" == "0" ]] && judge_args=(--no-llm-judge)
-  uv run --locked gpt2-reasoning-search rl-search \
+  if [[ "${USE_LLM_JUDGE:-1}" == "0" ]]; then
+    judge_args=(--no-llm-judge)
+  fi
+  local args=(uv run --locked gpt2-reasoning-search rl-search \
     --checkpoint "$SFT_OUTPUT" --tokenizer-path "$TOKENIZER_PATH" \
     --prompts "$RL_PROMPTS" --index "$WIKI_INDEX" --output "$RL_OUTPUT" \
     --epochs "$RL_EPOCHS" --group-size "$RL_GROUP_SIZE" --max-searches 3 \
-    "${judge_args[@]}" "${RESUME_ARGS[@]}"
+    "${judge_args[@]}")
+  if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
+  "${args[@]}"
 }
 
 case "$STAGE" in
@@ -218,7 +267,14 @@ case "$STAGE" in
   pretrain) run_pretrain ;;
   sft) run_sft ;;
   rl) run_rl ;;
-  all) run_prepare; run_smoke; run_proxies; run_pretrain; run_sft; run_rl ;;
+  all)
+    if [[ "${PREPARE_IN_JOB:-0}" == "1" ]]; then run_prepare; else require_prepared; fi
+    if [[ "${RUN_SMOKE:-1}" == "1" ]]; then run_smoke; fi
+    if [[ "${RUN_PROXIES:-0}" == "1" ]]; then run_proxies; fi
+    if [[ "${RUN_PRETRAIN:-1}" == "1" ]]; then run_pretrain; fi
+    if [[ "${RUN_SFT:-1}" == "1" ]]; then run_sft; fi
+    if [[ "${RUN_RL:-1}" == "1" ]]; then run_rl; fi
+    ;;
   *) echo "Unknown stage: $STAGE" >&2; exit 2 ;;
 esac
 

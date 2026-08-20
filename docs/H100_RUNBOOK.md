@@ -13,12 +13,12 @@ uv run python -c "import torch; print(torch.cuda.get_device_name(), torch.cuda.i
 
 Confirm an H100-class CUDA device, bf16 support, enough local capacity for datasets/checkpoints, and
 the expected revisions in `config/datasets.json`. Prepare tokenizer, token arrays, contamination
-prompts, and Wikipedia index before the 24-hour GPU window when possible. Copy these artifacts with
+prompts, and Wikipedia index before the GPU window when possible. Copy these artifacts with
 hash-preserving tooling and compare their manifests after transfer.
 
 Run `smoke-overfit` before spending the main budget. Keep the 0/30/70 proxy token budgets equal.
 
-## Suggested allocation
+## Original 24-hour allocation
 
 - Throughput calibration and smoke gates: 0.5 hour.
 - Three equal-budget 124M proxies: 4.5 hours total.
@@ -30,6 +30,27 @@ Run `smoke-overfit` before spending the main budget. Keep the 0/30/70 proxy toke
 The trainer measures steady-state throughput after compile warmup and reduces the main token cap to
 fit the configured wall-clock window. The 2.5B cap is a maximum, not a promise that one H100 can
 consume it in a day.
+
+## Eight-hour reservation
+
+The SSH/Slurm profile is sized for an eight-hour reservation. It deliberately omits the proxy
+ablations and uses a shortened main run:
+
+- preparation: before the GPU reservation, on a networked login/preprocessing node;
+- smoke gate: a few minutes;
+- 350M 70% main pretraining: 4.5 hours, 750M-token cap;
+- tool SFT, search RL, and buffer: the remaining time.
+
+Prepare the artifacts first, then submit the batch job:
+
+```bash
+./train-ssh prepare
+sbatch scripts/slurm/train_h100.sbatch all
+```
+
+This cannot support the original three-proxy comparison. Run
+`sbatch scripts/slurm/train_h100.sbatch proxies` in a separate reservation if those controls are
+required. Re-submit any interrupted stage; complete checkpoints resume automatically.
 
 ## Resume and monitoring
 
@@ -59,7 +80,7 @@ uv run gpt2-reasoning-search rl-search \
   --tokenizer-path artifacts/tokenizer.json \
   --prompts data/rl/search-qa.jsonl \
   --index artifacts/wiki-index \
-  --output checkpoints/search-rl --group-size 4 \
+  --output checkpoints/search-rl --group-size 2 \
   --llm-judge --judge-device cuda
 ```
 

@@ -40,12 +40,15 @@ For a remote H100, the shortest path is:
 ./train-ssh setup
 # Edit config/ssh.env, especially TRAIN_CACHE and input paths.
 ./train-ssh doctor
+./train-ssh prepare
 ./train-ssh all
 ./train-ssh status
 ```
 
-`all` prepares any missing artifacts before training. Long stages survive disconnects through tmux
-or nohup, automatically resume complete checkpoints, and can also be submitted with
+The default profile is sized for an eight-hour GPU reservation: prepare large artifacts before the
+GPU job when possible, then run smoke, the shortened main run, SFT, and RL. Proxy ablations are
+disabled by default. Long stages survive disconnects through tmux or nohup, automatically resume
+complete checkpoints, and can also be submitted with
 `./train-ssh slurm all` or the editable
 `sbatch scripts/slurm/train_h100.sbatch all`. See the
 [SSH training guide](docs/SSH_TRAINING.md).

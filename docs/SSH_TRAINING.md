@@ -17,11 +17,14 @@ paths. Then:
 
 ```bash
 ./train-ssh doctor
+./train-ssh prepare       # do this before reserving the GPU when possible
 ./train-ssh all
 ```
 
-`all` prepares missing artifacts and then runs every training stage in one background session. It
-survives an SSH disconnect. Follow progress from a new login:
+The default profile is sized for an eight-hour GPU reservation. Prepare artifacts before reserving
+the GPU when possible; `all` then runs smoke, the 350M main run, tool SFT, and search RL. It skips
+proxy ablations by default because they cannot fit in eight hours. The job survives an SSH
+disconnect. Follow progress from a new login:
 
 ```bash
 cd gpt2-reasoning-search
@@ -59,11 +62,19 @@ This is safer when the school gives several shorter reservations:
 
 ```bash
 ./train-ssh smoke
-./train-ssh proxies
 ./train-ssh pretrain
 ./train-ssh sft
 ./train-ssh rl
 ```
+
+The eight-hour profile allocates about 4.5 hours and a 750M-token cap to the 350M main run, leaving
+time for SFT, RL, and overhead. This is a shortened experiment, not the original 2.5B-token run.
+The proxy comparison remains available with `./train-ssh proxies` but requires a separate
+reservation.
+
+The profile is selected by `TRAIN_PROFILE="8h"` in `config/ssh.env`. Existing config files are
+automatically treated as `8h` after upgrading; set `TRAIN_PROFILE="custom"` if you deliberately
+want to use manually chosen budgets.
 
 Every command is idempotent around completed outputs. `AUTO_RESUME=1` is the default. Set it to `0`
 only when deliberately starting a clean output directory.
@@ -97,8 +108,8 @@ sbatch scripts/slurm/train_h100.sbatch pretrain
 The script writes Slurm stdout/stderr to `logs/slurm-<job-name>-<job-id>.*` and runs the same safe,
 auto-resuming worker as `train-ssh`.
 
-If the 24-hour job limit is shorter than the full pipeline, submit stages separately. A timed-out
-stage can be submitted again and will resume its newest complete checkpoint.
+If the eight-hour job limit is shorter than a stage, submit stages separately. A timed-out stage can
+be submitted again and will resume its newest complete checkpoint.
 
 ## Useful commands
 
