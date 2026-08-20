@@ -2,6 +2,7 @@ import re
 import tomllib
 from pathlib import Path
 
+from click.utils import strip_ansi
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -118,7 +119,7 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
     assert captured[1].judge_model is None
     assert captured[1].judge_revision is None
     assert invalid_custom.exit_code != 0
-    normalized_error = " ".join(invalid_custom.output.split())
+    normalized_error = " ".join(strip_ansi(invalid_custom.output).split())
     assert "custom --judge-model requires --judge-revision" in normalized_error
 
 
