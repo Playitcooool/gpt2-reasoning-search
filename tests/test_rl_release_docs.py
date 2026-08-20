@@ -118,7 +118,8 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
     assert captured[1].judge_model is None
     assert captured[1].judge_revision is None
     assert invalid_custom.exit_code != 0
-    assert "custom --judge-model requires --judge-revision" in invalid_custom.output
+    normalized_error = " ".join(invalid_custom.output.split())
+    assert "custom --judge-model requires --judge-revision" in normalized_error
 
 
 def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior() -> None:

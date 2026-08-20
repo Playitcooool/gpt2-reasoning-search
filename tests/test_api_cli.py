@@ -1,6 +1,7 @@
 import json
 
 from fastapi.testclient import TestClient
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from gpt2_reasoning_search.agent import SearchAgent
@@ -80,7 +81,6 @@ def test_cli_help_lists_training_search_and_serving_commands() -> None:
         "make-trajectories",
         "sft-tools",
         "rl-search",
-        "rl-search",
         "ask",
         "serve",
         "experiment-plan",
@@ -93,25 +93,28 @@ def test_cli_help_lists_training_search_and_serving_commands() -> None:
 
 
 def test_rl_search_help_registers_training_options() -> None:
+    command = get_command(app).commands["rl-search"]
+    parameters = {parameter.name: parameter for parameter in command.params}
     result = CliRunner().invoke(app, ["rl-search", "--help"])
 
     assert result.exit_code == 0
-    for option in (
-        "--checkpoint",
-        "--tokenizer-path",
-        "--prompts",
-        "--index",
-        "--output",
-        "--epochs",
-        "--group-size",
-        "--max-searches",
-        "--learning-rate",
-        "--kl-coefficient",
-        "--resume-from",
-        "--enable-rerank",
-        "--retrieval-dev",
-    ):
-        assert option in result.stdout
+    expected = {
+        "checkpoint": "--checkpoint",
+        "tokenizer_path": "--tokenizer-path",
+        "prompts": "--prompts",
+        "index": "--index",
+        "output": "--output",
+        "epochs": "--epochs",
+        "group_size": "--group-size",
+        "max_searches": "--max-searches",
+        "learning_rate": "--learning-rate",
+        "kl_coefficient": "--kl-coefficient",
+        "resume_from": "--resume-from",
+        "enable_reranker": "--enable-reranker",
+        "retrieval_device": "--retrieval-device",
+    }
+    for name, option in expected.items():
+        assert option in parameters[name].opts
 
 
 def test_evaluation_and_plan_cli_commands_write_reports(tmp_path) -> None:
