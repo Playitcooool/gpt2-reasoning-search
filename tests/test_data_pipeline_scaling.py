@@ -570,7 +570,7 @@ def test_prepare_token_corpora_writes_auditable_run_manifest(
 
 
 def test_prepare_data_cli_exposes_evaluation_prompt_option() -> None:
-    result = CliRunner().invoke(app, ["prepare-data", "--help"])
+    result = CliRunner().invoke(app, ["prepare-data", "--help"], terminal_width=240)
 
     assert result.exit_code == 0
     assert "--evaluation-prompts" in result.stdout

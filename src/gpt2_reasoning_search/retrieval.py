@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import os
 import shutil
@@ -128,6 +129,7 @@ def build_wikipedia_index(
     pending_ids: list[int] = []
     dense_index = None
     count = 0
+    metadata_closed = False
 
     def flush_dense() -> None:
         nonlocal dense_index
@@ -179,6 +181,7 @@ def build_wikipedia_index(
         writer.wait_merging_threads()
         metadata.commit()
         metadata.close()
+        metadata_closed = True
         if dense_index is not None:
             dense_index.save(temporary / "dense.usearch")
         manifest = {
@@ -198,7 +201,16 @@ def build_wikipedia_index(
         os.replace(temporary, output_directory)
         return count
     except Exception:
-        metadata.close()
+        try:
+            writer.rollback()
+            writer.wait_merging_threads()
+        except (RuntimeError, ValueError):
+            pass
+        if not metadata_closed:
+            metadata.close()
+        del writer
+        del index
+        gc.collect()
         shutil.rmtree(temporary, ignore_errors=True)
         raise
 
