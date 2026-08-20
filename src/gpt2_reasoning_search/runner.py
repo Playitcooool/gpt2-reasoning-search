@@ -30,14 +30,31 @@ class ModelRunner:
         load_model_weights(checkpoint_directory, self.model, resolved_device)
         self.model.eval()
 
+    def _encode_prompt(self, prompt: str) -> list[int]:
+        ids = self.tokenizer.encode(prompt).ids
+        maximum = self.model.config.max_seq_len
+        if len(ids) <= maximum:
+            return ids
+        head = min(256, maximum // 4)
+        return ids[:head] + ids[-(maximum - head) :]
+
     def generate(self, prompt: str, max_new_tokens: int = 512) -> tuple[str, int, int]:
-        encoded = self.tokenizer.encode(prompt)
-        input_ids = torch.tensor([encoded.ids], dtype=torch.long, device=self.device)
+        encoded_ids = self._encode_prompt(prompt)
+        if not encoded_ids:
+            raise ValueError("prompt must contain at least one token")
+        input_ids = torch.tensor([encoded_ids], dtype=torch.long, device=self.device)
         eos = self.tokenizer.token_to_id("<|eos|>")
-        output = self.model.generate(input_ids, max_new_tokens=max_new_tokens, eos_token_id=eos)
+        end_tool_call = self.tokenizer.token_to_id("<|end_tool_call|>")
+        stop_ids = {end_tool_call} if end_tool_call is not None else None
+        output = self.model.generate(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            eos_token_id=eos,
+            stop_token_ids=stop_ids,
+        )
         new_ids = output[0, input_ids.shape[1] :].tolist()
         return (
             self.tokenizer.decode(new_ids, skip_special_tokens=False),
-            len(encoded.ids),
+            len(encoded_ids),
             len(new_ids),
         )

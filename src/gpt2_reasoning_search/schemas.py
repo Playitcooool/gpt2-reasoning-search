@@ -38,11 +38,17 @@ class Citation(BaseModel):
     source_id: str
     title: str
     url: str
+    snippet: str = ""
+    provider: str = "unknown"
 
 
 class ToolTraceEntry(BaseModel):
-    call: ToolCall
-    results: list[SearchResult]
+    call: ToolCall | None = None
+    results: list[SearchResult] = Field(default_factory=list)
+    provider: str | None = None
+    status: Literal["ok", "empty", "invalid", "rejected", "error"] = "ok"
+    error: str | None = None
+    elapsed_seconds: float = 0.0
 
 
 class AnswerRequest(BaseModel):
@@ -59,6 +65,8 @@ class AnswerResponse(BaseModel):
     input_tokens: int
     output_tokens: int
     elapsed_seconds: float
+    finish_reason: Literal["answer", "search_limit", "invalid_tool", "error"] = "answer"
+    searches_used: int = 0
     reasoning_notice: str = (
         "Generated scratch work for research inspection; "
         "not a faithful account of internal computation."

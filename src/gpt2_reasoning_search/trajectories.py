@@ -34,20 +34,66 @@ def trajectory_document(
     )
 
 
+def multi_step_trajectory_document(
+    question: str,
+    answer: str,
+    searches: list[tuple[str, list[SearchResult]]],
+    reasoning: str,
+) -> str:
+    if not searches:
+        return trajectory_document(question, answer, None, [], reasoning)
+    if len(searches) > 3:
+        raise ValueError("a tool trajectory may contain at most three searches")
+    parts = [f"<|problem|>\n{question.strip()}\n"]
+    cited: dict[str, SearchResult] = {}
+    for query, evidence in searches:
+        call = ToolCall(
+            name="search",
+            arguments=SearchArguments(query=query, top_k=min(10, len(evidence) or 5)),
+        )
+        parts.extend(
+            [
+                "<|tool_call|>",
+                call.model_dump_json(),
+                "<|end_tool_call|>\n",
+                format_tool_results(evidence),
+                "\n",
+            ]
+        )
+        for item in evidence:
+            cited[item.id] = item
+    citations = " ".join(f"<|citation|>{source_id}" for source_id in cited)
+    parts.append(f"<|reasoning|>{reasoning.strip()}<|answer|>{answer.strip()} {citations}".rstrip())
+    return "".join(parts)
+
+
 def generate_trajectories(rows: Iterable[dict], output: Path) -> int:
     """Normalize evidence-grounded rows; expected fields are documented in README."""
     output.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     with output.open("w") as handle:
         for row in rows:
-            evidence = [SearchResult.model_validate(item) for item in row.get("evidence", [])]
-            document = trajectory_document(
-                question=row["question"],
-                answer=row["answer"],
-                query=row.get("query"),
-                evidence=evidence,
-                reasoning=row.get("reasoning", "Use the supplied evidence to answer the question."),
-            )
+            reasoning = row.get("reasoning", "Use the supplied evidence to answer the question.")
+            if "searches" in row:
+                searches = [
+                    (
+                        step["query"],
+                        [SearchResult.model_validate(item) for item in step.get("evidence", [])],
+                    )
+                    for step in row["searches"]
+                ]
+                document = multi_step_trajectory_document(
+                    row["question"], row["answer"], searches, reasoning
+                )
+            else:
+                evidence = [SearchResult.model_validate(item) for item in row.get("evidence", [])]
+                document = trajectory_document(
+                    question=row["question"],
+                    answer=row["answer"],
+                    query=row.get("query"),
+                    evidence=evidence,
+                    reasoning=reasoning,
+                )
             handle.write(json.dumps({"text": document}, ensure_ascii=False) + "\n")
             count += 1
     return count

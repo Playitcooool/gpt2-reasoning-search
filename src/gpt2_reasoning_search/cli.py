@@ -160,10 +160,24 @@ def sft_tools_command(
     trajectories: Path = typer.Option(..., exists=True),
     output: Path = typer.Option(Path("checkpoints/tool-sft")),
     epochs: int = typer.Option(1, min=1),
+    micro_batch_size: int = typer.Option(4, min=1),
+    gradient_accumulation_steps: int = typer.Option(8, min=1),
+    resume_from: Path | None = typer.Option(None, exists=True),
 ) -> None:
     """Fine-tune a pretrained checkpoint on search trajectories."""
     typer.echo(
-        str(fine_tune_tools(checkpoint, tokenizer_path, trajectories, output, epochs=epochs))
+        str(
+            fine_tune_tools(
+                checkpoint,
+                tokenizer_path,
+                trajectories,
+                output,
+                epochs=epochs,
+                micro_batch_size=micro_batch_size,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+                resume_from=resume_from,
+            )
+        )
     )
 
 
