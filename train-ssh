@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKER="$PROJECT_ROOT/scripts/ssh/worker.sh"
+CONFIG_FILE="${SSH_TRAIN_CONFIG:-$PROJECT_ROOT/config/ssh.env}"
+
+usage() {
+  cat <<'EOF'
+Easy SSH/H100 training
+
+  ./train-ssh setup                 Install/sync the locked environment (no sudo)
+  ./train-ssh doctor                Check GPU, disk, configuration, and input files
+  ./train-ssh prepare               Prepare tokenizer, corpora, index, and trajectories
+  ./train-ssh smoke                 Run the small CUDA learning gate
+  ./train-ssh proxies               Run the 0% / 30% / 70% proxy experiments
+  ./train-ssh pretrain              Train or auto-resume the 350M base model
+  ./train-ssh sft                   Train or auto-resume search-tool SFT
+  ./train-ssh rl                    Train or auto-resume search RL with Qwen judge
+  ./train-ssh all                   Run smoke, proxies, pretrain, SFT, and RL
+  ./train-ssh foreground STAGE      Run a stage in the current terminal
+  ./train-ssh slurm STAGE           Submit a stage through sbatch
+  ./train-ssh status                Show jobs, GPU state, checkpoints, and recent metrics
+  ./train-ssh logs [STAGE]          Follow a stage log
+  ./train-ssh attach [STAGE]        Attach to its tmux session, or follow its log
+
+Long stages launch in tmux and survive SSH disconnects. If tmux is unavailable, the launcher uses
+nohup. Re-run the same stage to resume from its latest complete checkpoint.
+EOF
+}
+
+require_config() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Missing $CONFIG_FILE" >&2
+    echo "Run ./train-ssh setup, then edit config/ssh.env." >&2
+    exit 2
+  fi
+}
+
+load_config() {
+  require_config
+  set -a
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+  set +a
+  export SSH_TRAIN_CONFIG="$CONFIG_FILE"
+}
+
+launch() {
+  local stage="$1"
+  load_config
+  mkdir -p "$PROJECT_ROOT/logs"
+  local session="${SESSION_PREFIX:-grs}-$stage"
+  if command -v tmux >/dev/null 2>&1; then
+    if tmux has-session -t "$session" 2>/dev/null; then
+      echo "Session $session is already running. Use: ./train-ssh attach $stage"
+      exit 0
+    fi
+    tmux new-session -d -s "$session" \
+      "cd '$PROJECT_ROOT' && SSH_TRAIN_CONFIG='$CONFIG_FILE' '$WORKER' '$stage'"
+    echo "Started tmux session $session"
+  else
+    local pid_file="$PROJECT_ROOT/logs/$stage.pid"
+    if [[ -f "$pid_file" ]] && kill -0 "$(<"$pid_file")" 2>/dev/null; then
+      echo "Stage $stage is already running as PID $(<"$pid_file")."
+      exit 0
+    fi
+    nohup env SSH_TRAIN_CONFIG="$CONFIG_FILE" "$WORKER" "$stage" >/dev/null 2>&1 &
+    echo "$!" > "$pid_file"
+    echo "tmux was not found; started $stage with nohup as PID $!."
+  fi
+  echo "Follow it with: ./train-ssh logs $stage"
+}
+
+submit_slurm() {
+  local stage="$1"
+  load_config
+  command -v sbatch >/dev/null 2>&1 || {
+    echo "sbatch is not available on this server." >&2
+    exit 2
+  }
+  mkdir -p "$PROJECT_ROOT/logs"
+  local args=(
+    --job-name="${SESSION_PREFIX:-grs}-$stage"
+    --gres="${SLURM_GRES:-gpu:1}"
+    --cpus-per-task="${SLURM_CPUS:-16}"
+    --mem="${SLURM_MEMORY:-128G}"
+    --time="${SLURM_TIME:-24:00:00}"
+    --output="$PROJECT_ROOT/logs/slurm-%j.log"
+    --export="ALL,SSH_TRAIN_CONFIG=$CONFIG_FILE"
+  )
+  [[ -n "${SLURM_PARTITION:-}" ]] && args+=(--partition="$SLURM_PARTITION")
+  [[ -n "${SLURM_ACCOUNT:-}" ]] && args+=(--account="$SLURM_ACCOUNT")
+  sbatch "${args[@]}" "$WORKER" "$stage"
+}
+
+validate_stage() {
+  local stage="${1:-}"
+  case "$stage" in
+    prepare|smoke|proxies|pretrain|sft|rl|all) return 0 ;;
+    *) echo "Choose: prepare, smoke, proxies, pretrain, sft, rl, or all." >&2; return 2 ;;
+  esac
+}
+
+case "${1:-help}" in
+  setup) exec "$PROJECT_ROOT/scripts/ssh/setup.sh" ;;
+  doctor) load_config; exec "$WORKER" doctor ;;
+  prepare|smoke|proxies|pretrain|sft|rl|all) launch "$1" ;;
+  foreground)
+    stage="${2:-}"
+    validate_stage "$stage"
+    load_config
+    exec "$WORKER" "$stage"
+    ;;
+  slurm)
+    stage="${2:-}"
+    validate_stage "$stage"
+    submit_slurm "$stage"
+    ;;
+  status) load_config; exec "$PROJECT_ROOT/scripts/ssh/status.sh" ;;
+  logs)
+    stage="${2:-all}"
+    validate_stage "$stage"
+    mkdir -p "$PROJECT_ROOT/logs"
+    touch "$PROJECT_ROOT/logs/$stage.log"
+    exec tail -n 100 -F "$PROJECT_ROOT/logs/$stage.log"
+    ;;
+  attach)
+    stage="${2:-all}"
+    validate_stage "$stage"
+    load_config
+    session="${SESSION_PREFIX:-grs}-$stage"
+    if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$session" 2>/dev/null; then
+      exec tmux attach-session -t "$session"
+    fi
+    mkdir -p "$PROJECT_ROOT/logs"
+    touch "$PROJECT_ROOT/logs/$stage.log"
+    exec tail -n 100 -F "$PROJECT_ROOT/logs/$stage.log"
+    ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

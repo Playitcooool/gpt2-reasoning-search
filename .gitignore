@@ -31,3 +31,4 @@ data/raw/
 data/processed/
 logs/
 wandb/
+config/ssh.env

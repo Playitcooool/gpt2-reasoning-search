@@ -32,6 +32,23 @@ uv run gpt2-reasoning-search --help
 
 Python 3.11 is pinned. See [the H100 runbook](docs/H100_RUNBOOK.md) before starting a GPU run.
 
+### Easy SSH / school-cluster workflow
+
+For a remote H100, the shortest path is:
+
+```bash
+./train-ssh setup
+# Edit config/ssh.env, especially TRAIN_CACHE and input paths.
+./train-ssh doctor
+./train-ssh all
+./train-ssh status
+```
+
+`all` prepares any missing artifacts before training. Long stages survive disconnects through tmux
+or nohup, automatically resume complete checkpoints, and can also be submitted with
+`./train-ssh slurm all`. See the
+[SSH training guide](docs/SSH_TRAINING.md).
+
 ## Training pipeline
 
 Preprocessing is intentionally separate from the timed H100 window.
