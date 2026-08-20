@@ -83,6 +83,20 @@ squeue -u "$USER"
 ./train-ssh status
 ```
 
+If you prefer a normal editable `sbatch` file, use the included template. Edit its `#SBATCH` lines
+for your partition/account before submitting; these scheduler directives must be present when Slurm
+accepts the job and cannot be read later from `config/ssh.env`.
+
+```bash
+chmod +x scripts/slurm/train_h100.sbatch
+sbatch scripts/slurm/train_h100.sbatch all
+# After a time limit or interruption, submit the same stage again:
+sbatch scripts/slurm/train_h100.sbatch pretrain
+```
+
+The script writes Slurm stdout/stderr to `logs/slurm-<job-name>-<job-id>.*` and runs the same safe,
+auto-resuming worker as `train-ssh`.
+
 If the 24-hour job limit is shorter than the full pipeline, submit stages separately. A timed-out
 stage can be submitted again and will resume its newest complete checkpoint.
 

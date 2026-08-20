@@ -46,7 +46,8 @@ For a remote H100, the shortest path is:
 
 `all` prepares any missing artifacts before training. Long stages survive disconnects through tmux
 or nohup, automatically resume complete checkpoints, and can also be submitted with
-`./train-ssh slurm all`. See the
+`./train-ssh slurm all` or the editable
+`sbatch scripts/slurm/train_h100.sbatch all`. See the
 [SSH training guide](docs/SSH_TRAINING.md).
 
 ## Training pipeline
