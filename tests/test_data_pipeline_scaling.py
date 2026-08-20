@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from gpt2_reasoning_search.cli import app
@@ -570,8 +571,15 @@ def test_prepare_token_corpora_writes_auditable_run_manifest(
 
 
 def test_prepare_data_cli_exposes_evaluation_prompt_option() -> None:
-    result = CliRunner().invoke(app, ["prepare-data", "--help"], terminal_width=240)
+    command = get_command(app)
+    prepare_data = command.commands["prepare-data"]
+    option = next(
+        parameter
+        for parameter in prepare_data.params
+        if parameter.name == "evaluation_prompts"
+    )
+    result = CliRunner().invoke(app, ["prepare-data", "--help"])
 
     assert result.exit_code == 0
-    assert "--evaluation-prompts" in result.stdout
-    assert "prompts to exclude" in result.stdout
+    assert "--evaluation-prompts" in option.opts
+    assert option.help == "JSONL or text prompts to exclude from training"
