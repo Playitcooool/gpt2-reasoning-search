@@ -60,9 +60,7 @@ def test_no_search_trajectory_omits_all_tool_and_citation_markup() -> None:
         reasoning="Add two and two.",
     )
 
-    assert document == (
-        "<|problem|>\nWhat is 2 + 2?\n<|reasoning|>Add two and two.<|answer|>4"
-    )
+    assert document == ("<|problem|>\nWhat is 2 + 2?\n<|reasoning|>Add two and two.<|answer|>4")
     assert "<|tool_" not in document and "<|citation|>" not in document
 
 
@@ -177,9 +175,7 @@ def test_multi_step_reformulated_trajectory_and_three_search_cap() -> None:
 
 
 def test_sft_collation_pads_inputs_and_masks_padded_labels() -> None:
-    inputs, labels = collate_sft_batch(
-        [([1, 2, 3], [-100, 2, 3]), ([4], [4])], pad_token_id=0
-    )
+    inputs, labels = collate_sft_batch([([1, 2, 3], [-100, 2, 3]), ([4], [4])], pad_token_id=0)
 
     assert inputs.tolist() == [[1, 2, 3], [4, 0, 0]]
     assert labels.tolist() == [[-100, 2, 3], [4, -100, -100]]
@@ -223,6 +219,9 @@ def test_sft_trajectory_validation_reports_bad_rows(tmp_path: Path) -> None:
         {"gradient_accumulation_steps": 0},
         {"shuffle_buffer_size": 0},
         {"warmup_fraction": 1.0},
+        {"time_budget_hours": 0.0},
+        {"time_budget_hours": float("nan")},
+        {"time_budget_hours": float("inf")},
     ],
 )
 def test_sft_rejects_invalid_training_configuration(
@@ -260,9 +259,7 @@ def test_sft_resume_cursor_and_partial_accumulation_scaling_with_cpu_mocks(
         __import__("json").dumps({"config": {"model": model_config}})
     )
     trajectories = tmp_path / "trajectories.jsonl"
-    trajectories.write_text(
-        "".join(f'{{"text":"example-{index}"}}\n' for index in range(3))
-    )
+    trajectories.write_text("".join(f'{{"text":"example-{index}"}}\n' for index in range(3)))
 
     class FakeModel(torch.nn.Module):
         def __init__(self, _config) -> None:
@@ -314,10 +311,10 @@ def test_sft_resume_cursor_and_partial_accumulation_scaling_with_cpu_mocks(
     monkeypatch.setattr(
         sft_module.torch.nn.utils,
         "clip_grad_norm_",
-        lambda parameters, _limit: clipped_gradients.append(
-            next(iter(parameters)).grad.item()
-        )
-        or torch.tensor(abs(clipped_gradients[-1])),
+        lambda parameters, _limit: (
+            clipped_gradients.append(next(iter(parameters)).grad.item())
+            or torch.tensor(abs(clipped_gradients[-1]))
+        ),
     )
     monkeypatch.setattr(
         sft_module,
@@ -343,3 +340,47 @@ def test_sft_resume_cursor_and_partial_accumulation_scaling_with_cpu_mocks(
     # partial update is corrected back to the same effective unit gradient.
     assert clipped_gradients == pytest.approx([1.0, 1.0])
     assert saved[-1] == (7, {"epoch": 3, "examples_in_epoch": 0})
+
+    saved.clear()
+    clock_calls = 0
+
+    def expired_clock() -> float:
+        nonlocal clock_calls
+        clock_calls += 1
+        return 0.0 if clock_calls == 1 else 3_601.0
+
+    monkeypatch.setattr(sft_module.time, "perf_counter", expired_clock)
+    timed_out = fine_tune_tools(
+        checkpoint,
+        tmp_path / "tokenizer.json",
+        trajectories,
+        tmp_path / "timed-out",
+        epochs=3,
+        time_budget_hours=1.0,
+        micro_batch_size=1,
+        gradient_accumulation_steps=8,
+        resume_from=tmp_path / "resume",
+    )
+
+    assert timed_out == tmp_path / "timed-out" / "step-00000005"
+    assert saved[-1][0] == 5
+    assert saved[-1][1] == {"epoch": 1, "examples_in_epoch": 2}
+
+    final_trajectory = tmp_path / "final-trajectory.jsonl"
+    final_trajectory.write_text('{"text":"last example"}\n')
+    saved.clear()
+    clock = iter([0.0, 0.0, 3_601.0])
+    monkeypatch.setattr(sft_module.time, "perf_counter", lambda: next(clock))
+    completed_at_deadline = fine_tune_tools(
+        checkpoint,
+        tmp_path / "tokenizer.json",
+        final_trajectory,
+        tmp_path / "completed-at-deadline",
+        epochs=1,
+        time_budget_hours=1.0,
+        micro_batch_size=1,
+        gradient_accumulation_steps=1,
+    )
+
+    assert completed_at_deadline == tmp_path / "completed-at-deadline"
+    assert saved[-1] == (1, {"epoch": 1, "examples_in_epoch": 0})

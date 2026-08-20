@@ -38,9 +38,10 @@ ablations and uses a shortened main run:
 
 - preparation: before the GPU reservation, on a networked login/preprocessing node;
 - smoke gate: a few minutes;
-- 350M 70% main pretraining: 4.5 hours, 750M-token cap;
-- tool SFT: one separate eight-hour reservation;
-- search RL: one separate eight-hour reservation (with the Qwen judge enabled by default).
+- 350M 70% main pretraining: 7.5 hours, up to a 2.5B-token cap;
+- tool SFT: 7.5 hours in one separate eight-hour reservation;
+- search RL: 7.5 hours in one separate eight-hour reservation (with the Qwen judge enabled by
+  default).
 
 Prepare the artifacts first, then submit the batch job:
 
@@ -49,10 +50,12 @@ Prepare the artifacts first, then submit the batch job:
 scripts/slurm/submit_8h_pipeline.sh
 ```
 
-This submits independent eight-hour pretrain, SFT, and RL jobs with `afterok` dependencies. It cannot
+This submits independent eight-hour pretrain, SFT, and RL jobs with `afterok` dependencies. Each
+worker stops at 7.5 hours and writes a resumable checkpoint before the Slurm walltime. It cannot
 support the original three-proxy comparison. Run
 `sbatch scripts/slurm/train_h100.sbatch proxies` in a separate reservation if those controls are
-required. Re-submit any interrupted stage; complete checkpoints resume automatically.
+required. If a stage is interrupted, cancel the old chain's pending dependents and rerun the
+wrapper; complete stages are skipped and the interrupted stage resumes automatically.
 
 ## Resume and monitoring
 
@@ -82,7 +85,7 @@ uv run gpt2-reasoning-search rl-search \
   --tokenizer-path artifacts/tokenizer.json \
   --prompts data/rl/search-qa.jsonl \
   --index artifacts/wiki-index \
-  --output checkpoints/search-rl --group-size 2 \
+  --output checkpoints/search-rl --epochs 8 --group-size 4 --time-budget-hours 7.5 \
   --llm-judge --judge-device cuda
 ```
 

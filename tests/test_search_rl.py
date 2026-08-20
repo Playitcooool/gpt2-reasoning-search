@@ -61,6 +61,9 @@ def config(tmp_path: Path, **overrides: object) -> SearchRLConfig:
         {"judge_max_new_tokens": 15},
         {"judge_model": "Qwen/Qwen3.5-2B", "judge_revision": None},
         {"judge_model": "Qwen/Qwen3.5-2B", "judge_revision": "main"},
+        {"time_budget_hours": 0.0},
+        {"time_budget_hours": float("nan")},
+        {"time_budget_hours": float("inf")},
     ],
 )
 def test_search_rl_config_validation(tmp_path: Path, overrides: dict[str, object]) -> None:
@@ -94,9 +97,7 @@ def test_stream_rl_prompts_accepts_schema_and_skips_empty_lines(tmp_path: Path) 
         ('{"question":"q","answer":"a","search_required":"false"}\n', "search_required"),
     ],
 )
-def test_stream_rl_prompts_rejects_invalid_schema(
-    tmp_path: Path, line: str, message: str
-) -> None:
+def test_stream_rl_prompts_rejects_invalid_schema(tmp_path: Path, line: str, message: str) -> None:
     path = tmp_path / "bad.jsonl"
     path.write_text(line)
 
@@ -303,9 +304,7 @@ def test_policy_generator_prompt_budget_sampling_stops_capture_and_reset() -> No
         maximum_new_tokens=3,
     )
 
-    text, input_tokens, output_tokens = generator(
-        ",".join(str(value) for value in range(12)), 10
-    )
+    text, input_tokens, output_tokens = generator(",".join(str(value) for value in range(12)), 10)
 
     call = model.calls[0]
     assert call["inputs"].tolist() == [[0, 8, 9, 10, 11]]
@@ -350,9 +349,7 @@ def test_segment_policy_loss_masks_prompt_and_advantage_controls_direction() -> 
     segment = RolloutSegment((0, 0, 0, 1), prompt_length=3)
     reference = PositionPolicy((0.0, 0.0, 0.0, 0.0))
     positive = PositionPolicy((0.0, 0.0, 0.0, 0.0))
-    loss, kl = segment_policy_loss(
-        positive, reference, segment, 1.0, 0.0, torch.device("cpu")
-    )
+    loss, kl = segment_policy_loss(positive, reference, segment, 1.0, 0.0, torch.device("cpu"))
     loss.backward()
     assert positive.values.grad is not None
     assert positive.values.grad[:2].tolist() == [0.0, 0.0]
@@ -371,9 +368,7 @@ def test_segment_policy_kl_is_nonnegative_and_zero_for_equal_reference() -> None
     segment = RolloutSegment((0, 0, 1), prompt_length=2)
     reference = PositionPolicy((0.0, -0.5, 0.0))
     equal = PositionPolicy((0.0, -0.5, 0.0))
-    _, equal_kl = segment_policy_loss(
-        equal, reference, segment, 0.0, 0.1, torch.device("cpu")
-    )
+    _, equal_kl = segment_policy_loss(equal, reference, segment, 0.0, 0.1, torch.device("cpu"))
     different = PositionPolicy((0.0, 1.5, 0.0))
     loss, different_kl = segment_policy_loss(
         different, reference, segment, 0.0, 0.1, torch.device("cpu")
@@ -614,6 +609,36 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
     assert search_rl_config["judge_revision"] == "a" * 40
     assert search_rl_config["judge_device"] == "cpu"
     assert search_rl_config["reward_weights"]["judge_answer_correctness"] == 0.20
+
+    original_perf_counter = rl_module.time.perf_counter
+    clock_calls = 0
+
+    def expired_clock() -> float:
+        nonlocal clock_calls
+        clock_calls += 1
+        return 0.0 if clock_calls == 1 else 3_601.0
+
+    monkeypatch.setattr(rl_module.time, "perf_counter", expired_clock)
+    timed_out_settings = config(
+        tmp_path,
+        checkpoint_directory=checkpoint,
+        prompts_path=prompts,
+        output_directory=tmp_path / "timed-out-output",
+        epochs=2,
+        group_size=2,
+        time_budget_hours=1.0,
+        resume_from=tmp_path / "resume",
+    )
+    timed_out = train_search_rl(timed_out_settings)
+    monkeypatch.setattr(rl_module.time, "perf_counter", original_perf_counter)
+
+    assert timed_out == tmp_path / "timed-out-output" / "step-00000005"
+    assert saves[-1][1:4] == (
+        5,
+        20,
+        {"epoch": 0, "prompt_cursor": 1, "rollouts": 10, "total_action_tokens": 20},
+    )
+    assert saves[-1][4]["search_rl"]["time_budget_hours"] == 1.0
 
     # Judge inference errors abort the update instead of silently changing the
     # reward distribution, while still closing both judge and search resources.

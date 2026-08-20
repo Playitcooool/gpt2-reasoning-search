@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
@@ -95,6 +96,7 @@ def fine_tune_tools(
     epochs: int = 1,
     learning_rate: float = 2e-5,
     *,
+    time_budget_hours: float | None = None,
     micro_batch_size: int = 4,
     gradient_accumulation_steps: int = 8,
     shuffle_buffer_size: int = 10_000,
@@ -107,6 +109,10 @@ def fine_tune_tools(
         raise RuntimeError("CUDA is required for tool fine-tuning")
     if epochs < 1 or micro_batch_size < 1 or gradient_accumulation_steps < 1:
         raise ValueError("epochs and batch sizes must be positive")
+    if time_budget_hours is not None and (
+        not math.isfinite(time_budget_hours) or time_budget_hours <= 0
+    ):
+        raise ValueError("time_budget_hours must be positive")
     if not 0 <= warmup_fraction < 1 or shuffle_buffer_size < 1:
         raise ValueError("invalid warmup fraction or shuffle buffer size")
 
@@ -149,6 +155,12 @@ def fine_tune_tools(
 
     output_directory.mkdir(parents=True, exist_ok=True)
     metrics_path = output_directory / "metrics.jsonl"
+    deadline = (
+        time.perf_counter() + time_budget_hours * 3600
+        if time_budget_hours is not None
+        else None
+    )
+    timed_out = False
     model.train()
     with metrics_path.open("a") as metrics:
         for epoch in range(start_epoch, epochs):
@@ -165,6 +177,9 @@ def fine_tune_tools(
                 if epoch == start_epoch and cursor < start_cursor:
                     cursor += 1
                     continue
+                if deadline is not None and time.perf_counter() >= deadline:
+                    timed_out = True
+                    break
                 encoded = encode_sft_document(tokenizer, text, config.max_seq_len)
                 cursor += 1
                 if len(encoded[0]) < 2 or all(label == -100 for label in encoded[1][1:]):
@@ -209,8 +224,23 @@ def fine_tune_tools(
                         step,
                         0,
                         {"epoch": epoch, "examples_in_epoch": cursor},
-                        {**state["config"], "tool_sft": {"epochs": epochs, "seed": seed}},
+                        {
+                            **state["config"],
+                            "tool_sft": {
+                                "epochs": epochs,
+                                "seed": seed,
+                                "time_budget_hours": time_budget_hours,
+                            },
+                        },
                     )
+                has_remaining_work = cursor < example_count or epoch + 1 < epochs
+                if (
+                    has_remaining_work
+                    and deadline is not None
+                    and time.perf_counter() >= deadline
+                ):
+                    timed_out = True
+                    break
             if batch:
                 inputs, labels = collate_sft_batch(batch, pad_token_id)
                 output = model(inputs.to(device), labels.to(device))
@@ -228,6 +258,32 @@ def fine_tune_tools(
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 step += 1
+            if (
+                deadline is not None
+                and epoch + 1 < epochs
+                and time.perf_counter() >= deadline
+            ):
+                timed_out = True
+            if timed_out:
+                checkpoint = output_directory / f"step-{step:08d}"
+                save_checkpoint(
+                    checkpoint,
+                    model,
+                    optimizer,
+                    scheduler,
+                    step,
+                    0,
+                    {"epoch": epoch, "examples_in_epoch": cursor},
+                    {
+                        **state["config"],
+                        "tool_sft": {
+                            "epochs": epochs,
+                            "seed": seed,
+                            "time_budget_hours": time_budget_hours,
+                        },
+                    },
+                )
+                return checkpoint
             start_cursor = 0
 
     save_checkpoint(
@@ -238,6 +294,13 @@ def fine_tune_tools(
         step,
         0,
         {"epoch": epochs, "examples_in_epoch": 0},
-        {**state["config"], "tool_sft": {"epochs": epochs, "seed": seed}},
+        {
+            **state["config"],
+            "tool_sft": {
+                "epochs": epochs,
+                "seed": seed,
+                "time_budget_hours": time_budget_hours,
+            },
+        },
     )
     return output_directory

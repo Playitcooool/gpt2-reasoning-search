@@ -194,3 +194,8 @@ def test_pipeline_docs_use_direct_submitter_and_never_submit_combined_all() -> N
     assert 'STAGE="${1:-pretrain}"' in batch
     assert "dependent jobs" in guide
     assert "separate eight-hour" in guide
+    normalized_guide = " ".join(guide.split())
+    assert "cancel the still-pending dependent jobs" in normalized_guide
+    assert "rerun `scripts/slurm/submit_8h_pipeline.sh`" in normalized_guide
+    assert "Completed stages are skipped" in normalized_guide
+    assert "incomplete stage resumes" in normalized_guide

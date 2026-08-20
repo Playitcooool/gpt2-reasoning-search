@@ -238,6 +238,22 @@ def train(config: TrainConfig, resume_from: Path | None = None) -> Path:
                     {**asdict(config), "model": model_config.to_dict()},
                 )
 
+    checkpoint_config = {**asdict(config), "model": model_config.to_dict()}
+    completed = mixture.state.total_tokens >= calibrated_budget
+    if not completed:
+        checkpoint = output_dir / f"step-{step:08d}"
+        save_checkpoint(
+            checkpoint,
+            raw_model,
+            optimizer,
+            scheduler,
+            step,
+            mixture.state.total_tokens,
+            mixture.state_dict(),
+            checkpoint_config,
+        )
+        return checkpoint
+
     final = output_dir / "final"
     save_checkpoint(
         final,
@@ -247,6 +263,6 @@ def train(config: TrainConfig, resume_from: Path | None = None) -> Path:
         step,
         mixture.state.total_tokens,
         mixture.state_dict(),
-        {**asdict(config), "model": model_config.to_dict()},
+        checkpoint_config,
     )
     return final

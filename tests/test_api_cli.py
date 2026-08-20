@@ -38,9 +38,7 @@ def test_configured_api_health_and_answer() -> None:
     client = TestClient(create_app(agent))
 
     assert client.get("/health").json() == {"status": "ok", "model_loaded": True}
-    response = client.post(
-        "/v1/answer", json={"query": "What is 2 + 2?", "search_mode": "off"}
-    )
+    response = client.post("/v1/answer", json={"query": "What is 2 + 2?", "search_mode": "off"})
 
     assert response.status_code == 200
     payload = response.json()
@@ -54,8 +52,7 @@ def test_configured_api_health_and_answer() -> None:
 def test_api_maps_missing_web_provider_to_503() -> None:
     agent = SearchAgent(
         lambda _prompt, _limit: (
-            '<|tool_call|>{"name":"search","arguments":{"query":"today"}}'
-            "<|end_tool_call|>",
+            '<|tool_call|>{"name":"search","arguments":{"query":"today"}}<|end_tool_call|>',
             2,
             2,
         ),
@@ -105,6 +102,7 @@ def test_rl_search_help_registers_training_options() -> None:
         "index": "--index",
         "output": "--output",
         "epochs": "--epochs",
+        "time_budget_hours": "--time-budget-hours",
         "group_size": "--group-size",
         "max_searches": "--max-searches",
         "learning_rate": "--learning-rate",
@@ -117,6 +115,15 @@ def test_rl_search_help_registers_training_options() -> None:
         assert option in parameters[name].opts
 
 
+def test_training_commands_default_to_seven_and_a_half_hour_budget() -> None:
+    commands = get_command(app).commands
+    for command_name in ("pretrain", "sft-tools", "rl-search"):
+        parameters = {parameter.name: parameter for parameter in commands[command_name].params}
+        budget = parameters["time_budget_hours"]
+        assert budget.default == 7.5
+        assert "--time-budget-hours" in budget.opts
+
+
 def test_evaluation_and_plan_cli_commands_write_reports(tmp_path) -> None:
     runner = CliRunner()
     plan = tmp_path / "plan.json"
@@ -124,9 +131,7 @@ def test_evaluation_and_plan_cli_commands_write_reports(tmp_path) -> None:
     reasoning_report = tmp_path / "reasoning-report.json"
     grounded_input = tmp_path / "grounded.jsonl"
     grounded_report = tmp_path / "grounded-report.json"
-    reasoning_input.write_text(
-        '{"task":"math","prediction":"The 4","answer":"4"}\n'
-    )
+    reasoning_input.write_text('{"task":"math","prediction":"The 4","answer":"4"}\n')
     grounded_input.write_text(
         '{"prediction":"Paris","answer":"Paris","queries":[],"retrieved_ids":[],'
         '"supporting_ids":[],"cited_ids":[]}\n'

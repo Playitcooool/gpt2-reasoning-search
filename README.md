@@ -47,8 +47,9 @@ For a remote H100, the shortest path is:
 
 The default profile is sized for an eight-hour GPU reservation: prepare large artifacts before the
 GPU job when possible, then run pretrain, SFT, and RL as separate stages. Proxy ablations are
-disabled by default. Long stages survive disconnects through tmux or nohup, automatically resume
-complete checkpoints, and can also be submitted with
+disabled by default. Each stage trains for about 7.5 hours, leaving a short startup/checkpoint
+margin; the main run can consume up to 2.5B tokens. Long stages survive disconnects through tmux or
+nohup, automatically resume complete checkpoints, and can also be submitted with
 `scripts/slurm/submit_8h_pipeline.sh` (pretrain → SFT → RL as dependent jobs). See the
 [SSH training guide](docs/SSH_TRAINING.md).
 
@@ -115,7 +116,7 @@ uv run gpt2-reasoning-search sft-tools \
   --checkpoint checkpoints/main-350m/final \
   --tokenizer-path artifacts/tokenizer.json \
   --trajectories data/processed/tool-trajectories.jsonl \
-  --output checkpoints/tool-sft
+  --output checkpoints/tool-sft --epochs 4 --time-budget-hours 7.5
 
 # Optimize answer, citation, and search behavior against the frozen local index.
 uv run gpt2-reasoning-search rl-search \
@@ -123,7 +124,7 @@ uv run gpt2-reasoning-search rl-search \
   --tokenizer-path artifacts/tokenizer.json \
   --prompts data/rl/search-qa.jsonl \
   --index artifacts/wiki-index \
-  --output checkpoints/search-rl \
+  --output checkpoints/search-rl --epochs 8 --group-size 4 --time-budget-hours 7.5 \
   --llm-judge --judge-device cuda
 ```
 

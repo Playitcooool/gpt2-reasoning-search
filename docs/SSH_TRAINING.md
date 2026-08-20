@@ -67,10 +67,11 @@ This is safer when the school gives several shorter reservations:
 ./train-ssh rl
 ```
 
-The eight-hour profile allocates about 4.5 hours and a 750M-token cap to the 350M main run. SFT and
-RL are separate stages, each submitted in its own eight-hour reservation. This is a shortened
-experiment, not the original 2.5B-token run. The proxy comparison remains available with
-`./train-ssh proxies` but requires a separate reservation.
+The eight-hour profile gives the 350M main run a 7.5-hour training budget and a 2.5B-token cap.
+SFT and RL are separate stages with 7.5-hour training budgets and 30 minutes reserved for startup
+and checkpoint finalization. This restores the full 2.5B maximum while keeping each stage below its
+eight-hour allocation. The proxy comparison remains available with `./train-ssh proxies` but
+requires a separate reservation.
 
 The profile is selected by `TRAIN_PROFILE="8h"` in `config/ssh.env`. Existing config files are
 automatically treated as `8h` after upgrading; set `TRAIN_PROFILE="custom"` if you deliberately
@@ -110,8 +111,11 @@ The script writes Slurm stdout/stderr to `logs/slurm-<job-name>-<job-id>.*` and 
 auto-resuming worker as `train-ssh`. Each stage gets a separate eight-hour allocation. The combined
 `all` stage is blocked by the default 8-hour profile so it cannot accidentally exceed the reservation.
 
-If a stage reaches its eight-hour limit, submit that stage again. It will resume its newest complete
-checkpoint; dependent jobs should be held until the retried stage succeeds.
+If a stage reaches its eight-hour limit, cancel the still-pending dependent jobs from that chain and
+rerun `scripts/slurm/submit_8h_pipeline.sh`. Completed stages are skipped, and the incomplete stage
+resumes its newest complete checkpoint before new `afterok` dependencies are created. For a
+single-stage retry, submit `sbatch scripts/slurm/train_h100.sbatch <stage>` and launch the next
+stage only after its final checkpoint exists.
 
 ## Useful commands
 

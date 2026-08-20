@@ -72,6 +72,7 @@ class SearchRLConfig:
     judge_model: str | None = None
     judge_revision: str | None = None
     judge_device: str = "cuda"
+    time_budget_hours: float | None = None
     judge_max_input_tokens: int = 4096
     judge_max_new_tokens: int = 128
     resume_from: Path | None = None
@@ -93,6 +94,10 @@ class SearchRLConfig:
             raise ValueError("retrieval_device must be cpu or cuda")
         if self.judge_device not in {"cpu", "cuda"}:
             raise ValueError("judge_device must be cpu or cuda")
+        if self.time_budget_hours is not None and (
+            not math.isfinite(self.time_budget_hours) or self.time_budget_hours <= 0
+        ):
+            raise ValueError("time_budget_hours must be positive")
         if self.judge_max_input_tokens < 256 or self.judge_max_new_tokens < 16:
             raise ValueError("invalid judge token limits")
         if self.judge_model and not self.judge_revision:
@@ -335,6 +340,11 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
     reward_weights = reward_weights or RewardWeights()
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for search reinforcement learning")
+    deadline = (
+        time.perf_counter() + config.time_budget_hours * 3600
+        if config.time_budget_hours is not None
+        else None
+    )
     prompts = list(stream_rl_prompts(config.prompts_path))
     if not prompts:
         raise ValueError("RL prompt dataset is empty")
@@ -401,6 +411,8 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
         "search_rl": {**asdict(config), "reward_weights": asdict(reward_weights)},
     }
 
+    timed_out = False
+    current_epoch = start_epoch
     try:
         if config.judge_model and config.judge_revision:
             judge = QwenRewardJudge(
@@ -412,9 +424,13 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
             )
         with metrics_path.open("a") as metrics:
             for epoch in range(start_epoch, config.epochs):
+                current_epoch = epoch
                 for prompt_index, row in enumerate(prompts):
                     if epoch == start_epoch and prompt_index < prompt_cursor:
                         continue
+                    if deadline is not None and time.perf_counter() >= deadline:
+                        timed_out = True
+                        break
                     rollout_records = []
                     for _ in range(config.group_size):
                         generator.reset()
@@ -477,6 +493,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                     scheduler.step()
                     step += 1
                     rollouts_seen += config.group_size
+                    prompt_cursor = prompt_index + 1
                     component_means = {
                         name: sum(record[2].components[name] for record in rollout_records)
                         / config.group_size
@@ -485,7 +502,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                     record = {
                         "step": step,
                         "epoch": epoch,
-                        "prompt_cursor": prompt_index + 1,
+                        "prompt_cursor": prompt_cursor,
                         "reward_mean": float(np.mean(rewards)),
                         "reward_std": float(np.std(rewards)),
                         "kl_mean": mean_kl,
@@ -510,17 +527,46 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                             action_tokens_seen,
                             {
                                 "epoch": epoch,
-                                "prompt_cursor": prompt_index + 1,
+                                "prompt_cursor": prompt_cursor,
                                 "rollouts": rollouts_seen,
                                 "total_action_tokens": action_tokens_seen,
                             },
                             checkpoint_config,
                         )
+                    has_remaining_work = prompt_cursor < len(prompts) or epoch + 1 < config.epochs
+                    if (
+                        has_remaining_work
+                        and deadline is not None
+                        and time.perf_counter() >= deadline
+                    ):
+                        timed_out = True
+                        break
+                if timed_out:
+                    break
                 prompt_cursor = 0
     finally:
         asyncio.run(agent.aclose())
         if judge is not None:
             judge.close()
+
+    if timed_out:
+        checkpoint = config.output_directory / f"step-{step:08d}"
+        save_checkpoint(
+            checkpoint,
+            policy,
+            optimizer,
+            scheduler,
+            step,
+            action_tokens_seen,
+            {
+                "epoch": current_epoch,
+                "prompt_cursor": prompt_cursor,
+                "rollouts": rollouts_seen,
+                "total_action_tokens": action_tokens_seen,
+            },
+            checkpoint_config,
+        )
+        return checkpoint
 
     final = config.output_directory / "final"
     save_checkpoint(

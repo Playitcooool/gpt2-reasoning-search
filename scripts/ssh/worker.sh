@@ -25,10 +25,17 @@ if [[ "${TRAIN_PROFILE:-8h}" == "8h" ]]; then
   : "${RUN_PRETRAIN:=1}"
   : "${RUN_SFT:=1}"
   : "${RUN_RL:=1}"
-  MAIN_TOKEN_CAP=750000000
-  MAIN_HOURS=4.5
-  RL_GROUP_SIZE=2
+  MAIN_TOKEN_CAP=2500000000
+  MAIN_HOURS=7.5
+  SFT_HOURS=7.5
+  RL_HOURS=7.5
+  SFT_EPOCHS=4
+  RL_EPOCHS=8
+  RL_GROUP_SIZE=4
 fi
+
+: "${SFT_HOURS:=7.5}"
+: "${RL_HOURS:=7.5}"
 
 cd "$PROJECT_ROOT"
 mkdir -p logs artifacts checkpoints data/processed "$TRAIN_CACHE"
@@ -203,6 +210,10 @@ run_pretrain_job() {
     --max-tokens "$token_cap" --time-budget-hours "$hours")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"
+  if [[ ! -d "$output/final" ]]; then
+    echo "$name reached its time budget without a final checkpoint. Re-submit the same stage to resume." >&2
+    return 75
+  fi
 }
 
 run_proxies() {
@@ -230,10 +241,15 @@ run_sft() {
   local args=(uv run --locked gpt2-reasoning-search sft-tools \
     --checkpoint "$MAIN_OUTPUT/final" --tokenizer-path "$TOKENIZER_PATH" \
     --trajectories "$TRAJECTORIES" --output "$SFT_OUTPUT" \
-    --epochs "$SFT_EPOCHS" --micro-batch-size "$SFT_MICRO_BATCH" \
+    --epochs "$SFT_EPOCHS" --time-budget-hours "$SFT_HOURS" \
+    --micro-batch-size "$SFT_MICRO_BATCH" \
     --gradient-accumulation-steps "$SFT_GRAD_ACCUM")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"
+  if [[ ! -f "$SFT_OUTPUT/model.safetensors" ]]; then
+    echo "Tool SFT reached its time budget without a final checkpoint. Re-submit the same stage to resume." >&2
+    return 75
+  fi
 }
 
 run_rl() {
@@ -253,10 +269,15 @@ run_rl() {
   local args=(uv run --locked gpt2-reasoning-search rl-search \
     --checkpoint "$SFT_OUTPUT" --tokenizer-path "$TOKENIZER_PATH" \
     --prompts "$RL_PROMPTS" --index "$WIKI_INDEX" --output "$RL_OUTPUT" \
-    --epochs "$RL_EPOCHS" --group-size "$RL_GROUP_SIZE" --max-searches 3 \
+    --epochs "$RL_EPOCHS" --time-budget-hours "$RL_HOURS" \
+    --group-size "$RL_GROUP_SIZE" --max-searches 3 \
     "${judge_args[@]}")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"
+  if [[ ! -d "$RL_OUTPUT/final" ]]; then
+    echo "Search RL reached its time budget without a final checkpoint. Re-submit the same stage to resume." >&2
+    return 75
+  fi
 }
 
 case "$STAGE" in

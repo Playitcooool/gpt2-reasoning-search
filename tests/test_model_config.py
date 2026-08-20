@@ -7,14 +7,11 @@ from gpt2_reasoning_search.model import GPT2ReasoningModel
 
 def _architectural_parameter_count(config: ModelConfig) -> int:
     embedding = config.vocab_size * config.d_model
-    attention = config.d_model * (
-        config.d_model + 2 * config.n_kv_heads * config.head_dim
-    ) + config.d_model * config.d_model
-    per_block = (
-        attention
-        + 3 * config.d_model * config.intermediate_size
-        + 2 * config.d_model
+    attention = (
+        config.d_model * (config.d_model + 2 * config.n_kv_heads * config.head_dim)
+        + config.d_model * config.d_model
     )
+    per_block = attention + 3 * config.d_model * config.intermediate_size + 2 * config.d_model
     return embedding + config.n_layers * per_block + config.d_model
 
 
@@ -125,4 +122,17 @@ def test_train_config_validates_ratio_and_computes_step_tokens(tmp_path) -> None
             reasoning_tokens=tmp_path / "r.npy",
             general_tokens=tmp_path / "g.npy",
             reasoning_ratio=1.1,
+        )
+
+
+@pytest.mark.parametrize("budget", [0.0, -1.0, float("nan"), float("inf")])
+def test_train_config_rejects_non_finite_or_non_positive_time_budget(
+    tmp_path, budget: float
+) -> None:
+    with pytest.raises(ValueError, match="time budget"):
+        TrainConfig(
+            output_dir=tmp_path,
+            reasoning_tokens=tmp_path / "reasoning.bin",
+            general_tokens=tmp_path / "general.bin",
+            time_budget_hours=budget,
         )

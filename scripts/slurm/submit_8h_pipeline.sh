@@ -46,4 +46,5 @@ Submitted the independent eight-hour stages:
   RL:       $rl_job (afterok:$sft_job)
 
 Monitor with: squeue -j $pretrain_job,$sft_job,$rl_job
+If a stage times out: scancel $sft_job $rl_job, then rerun this wrapper to create a fresh chain.
 EOF

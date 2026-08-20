@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -75,7 +76,7 @@ class TrainConfig:
     seed: int = 42
     save_every_steps: int = 1_000
     log_every_steps: int = 10
-    time_budget_hours: float = 18.0
+    time_budget_hours: float = 7.5
     calibration_steps: int = 20
     calibration_warmup_steps: int = 5
     compile_model: bool = True
@@ -90,7 +91,11 @@ class TrainConfig:
             raise ValueError("invalid token or sequence budget")
         if self.calibration_steps < 1 or self.calibration_warmup_steps < 0:
             raise ValueError("invalid calibration window")
-        if self.time_budget_hours <= 0 or self.learning_rate <= 0:
+        if (
+            not math.isfinite(self.time_budget_hours)
+            or self.time_budget_hours <= 0
+            or self.learning_rate <= 0
+        ):
             raise ValueError("time budget and learning rate must be positive")
 
     @property

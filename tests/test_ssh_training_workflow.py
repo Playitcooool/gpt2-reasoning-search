@@ -73,16 +73,18 @@ def _write_config(project: Path, tmp_path: Path, **overrides: object) -> Path:
         "CHECKPOINT_ROOT": outputs,
         "PROXY_TOKEN_CAP": 60,
         "PROXY_HOURS": 1.5,
-        "MAIN_TOKEN_CAP": 750_000_000,
-        "MAIN_HOURS": 4.5,
+        "MAIN_TOKEN_CAP": 2_500_000_000,
+        "MAIN_HOURS": 7.5,
         "MAIN_OUTPUT": outputs / "main",
         "SFT_OUTPUT": outputs / "sft",
-        "SFT_EPOCHS": 1,
+        "SFT_EPOCHS": 4,
+        "SFT_HOURS": 7.5,
         "SFT_MICRO_BATCH": 2,
         "SFT_GRAD_ACCUM": 2,
         "RL_OUTPUT": outputs / "rl",
-        "RL_EPOCHS": 1,
-        "RL_GROUP_SIZE": 2,
+        "RL_EPOCHS": 8,
+        "RL_HOURS": 7.5,
+        "RL_GROUP_SIZE": 4,
         "USE_LLM_JUDGE": 0,
         "SLURM_PARTITION": "gpu-school",
         "SLURM_ACCOUNT": "class-account",
@@ -455,11 +457,14 @@ def test_pretrain_auto_resume_selects_latest_complete_checkpoint_only(tmp_path: 
         extra_env={"FAKE_CALLS": str(calls)},
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 75
     log = calls.read_text()
     assert "ARG <--resume-from>" in log
     assert f"ARG <{output / 'step-00000020'}>" in log
     assert str(output / "step-00000030") not in log
+    assert "ARG <--time-budget-hours>" in log
+    assert "ARG <7.5>" in log
+    assert "Re-submit the same stage to resume" in result.stdout + result.stderr
 
 
 def test_completed_pretrain_stage_skips_uv_and_missing_inputs_fail_before_uv(
@@ -525,6 +530,41 @@ def test_completed_downstream_stage_skips_missing_inputs_and_uv(tmp_path: Path, 
     assert not calls.exists()
 
 
+@pytest.mark.parametrize(("stage", "budget_variable"), [("sft", "SFT_HOURS"), ("rl", "RL_HOURS")])
+def test_incomplete_downstream_stage_returns_temporary_failure_for_afterok_chain(
+    tmp_path: Path, stage: str, budget_variable: str
+) -> None:
+    project = _copy_workflow(tmp_path)
+    inputs = tmp_path / "inputs"
+    outputs = tmp_path / "outputs"
+    inputs.mkdir()
+    (inputs / "tokenizer.json").touch()
+    if stage == "sft":
+        (inputs / "trajectories.jsonl").touch()
+        (outputs / "main" / "final").mkdir(parents=True)
+    else:
+        (inputs / "rl.jsonl").touch()
+        (inputs / "wiki-index").mkdir()
+        (outputs / "sft").mkdir(parents=True)
+    config = _write_config(project, tmp_path, **{budget_variable: 7.5})
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    result = _run(
+        [project / "scripts" / "ssh" / "worker.sh", stage],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert result.returncode == 75
+    assert "ARG <--time-budget-hours>" in calls.read_text()
+    assert "ARG <7.5>" in calls.read_text()
+    assert "Re-submit the same stage to resume" in result.stdout + result.stderr
+
+
 def test_custom_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_path: Path) -> None:
     project = _copy_workflow(tmp_path)
     config = _write_config(project, tmp_path, PREPARE_IN_JOB=0, ALLOW_COMBINED_JOB=1)
@@ -584,8 +624,8 @@ def test_all_honors_disabled_stage_gates_and_optional_proxy_gate(tmp_path: Path)
         extra_env={"FAKE_CALLS": str(calls)},
     )
 
-    assert proxies.returncode == 0, proxies.stderr
-    assert calls.read_text().count("ARG <pretrain>") == 3
+    assert proxies.returncode == 75
+    assert calls.read_text().count("ARG <pretrain>") == 1
 
 
 def test_all_can_opt_into_preparation_inside_the_job(tmp_path: Path) -> None:
@@ -636,17 +676,21 @@ def test_default_cluster_config_and_docs_describe_eight_hour_profile() -> None:
         "RUN_PRETRAIN=1",
         "RUN_SFT=1",
         "RUN_RL=1",
-        "MAIN_TOKEN_CAP=750000000",
-        "MAIN_HOURS=4.5",
-        "RL_GROUP_SIZE=2",
+        "MAIN_TOKEN_CAP=2500000000",
+        "MAIN_HOURS=7.5",
+        "SFT_EPOCHS=4",
+        "SFT_HOURS=7.5",
+        "RL_EPOCHS=8",
+        "RL_HOURS=7.5",
+        "RL_GROUP_SIZE=4",
         'SLURM_TIME="08:00:00"',
     ):
         assert setting in example
     assert "${SLURM_TIME:-08:00:00}" in launcher
     assert "#SBATCH --time=08:00:00" in slurm_template
     assert "eight-hour" in docs
-    assert "750M-token cap" in docs
-    assert "4.5 hours" in docs
+    assert "2.5B-token cap" in docs
+    assert "7.5-hour" in docs
 
 
 def test_config_is_ignored_and_documented_commands_match_launcher() -> None:

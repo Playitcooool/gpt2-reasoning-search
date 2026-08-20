@@ -211,7 +211,10 @@ def test_h100_runbook_allocation_totals_exactly_one_day_and_includes_rl() -> Non
     assert hours == [0.5, 4.5, 14.0, 1.5, 2.0, 1.5]
     assert sum(hours) == 24.0
     assert "Search RL: 2 hours" in allocation
-    assert "--output checkpoints/search-rl --group-size 2" in " ".join(runbook.split())
+    assert (
+        "--output checkpoints/search-rl --epochs 8 --group-size 4 --time-budget-hours 7.5"
+        in " ".join(runbook.split())
+    )
 
     scheduled = one_h100_schedule()
     proxies = [run for run in scheduled if run.preset == "proxy-124m"]
