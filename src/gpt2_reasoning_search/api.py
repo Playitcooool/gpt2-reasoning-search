@@ -8,9 +8,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 
 from .agent import SearchAgent
+from .retrieval import LocalWikipediaSearchProvider
 from .runner import ModelRunner
 from .schemas import AnswerRequest, AnswerResponse
-from .search import BraveWebSearchProvider, LocalWikipediaSearchProvider
+from .web_search import BraveWebSearchProvider, SQLiteSearchCache
 
 
 def create_app(agent: SearchAgent | None = None) -> FastAPI:
@@ -23,9 +24,14 @@ def create_app(agent: SearchAgent | None = None) -> FastAPI:
         index = os.getenv("GRS_SEARCH_INDEX")
         if checkpoint and tokenizer and index:
             runner = ModelRunner(Path(checkpoint), Path(tokenizer))
-            local = LocalWikipediaSearchProvider(Path(index))
+            local = LocalWikipediaSearchProvider(Path(index), enable_reranker=True)
             brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
-            web = BraveWebSearchProvider(brave_key) if brave_key else None
+            cache_path = Path(os.getenv("GRS_SEARCH_CACHE", "artifacts/search-cache.sqlite3"))
+            web = (
+                BraveWebSearchProvider(brave_key, cache=SQLiteSearchCache(cache_path))
+                if brave_key
+                else None
+            )
             configured_agent = SearchAgent(runner.generate, local, web)
 
     @app.get("/health")

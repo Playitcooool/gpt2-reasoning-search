@@ -14,6 +14,9 @@ class SearchResult(BaseModel):
     snippet: str
     content: str
     score: float = 0.0
+    provider: str = "unknown"
+    published_at: str | None = None
+    score_components: dict[str, float] = Field(default_factory=dict)
 
 
 class SearchArguments(BaseModel):

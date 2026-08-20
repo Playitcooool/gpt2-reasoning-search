@@ -1,15 +1,14 @@
-"""Deterministic local BM25 and optional Brave Search providers."""
+"""Shared search contracts, normalization, chunking, and rank fusion."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Protocol
-
-import bm25s
-import httpx
+from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .schemas import SearchResult
 from .tokenizer import SPECIAL_TOKENS
@@ -19,7 +18,13 @@ class SearchProvider(Protocol):
     async def search(self, query: str, top_k: int = 5) -> list[SearchResult]: ...
 
 
-def sanitize_retrieved_text(text: str, max_characters: int = 6_000) -> str:
+class Reranker(Protocol):
+    def rerank(
+        self, query: str, candidates: Sequence[SearchResult], top_k: int
+    ) -> list[SearchResult]: ...
+
+
+def sanitize_retrieved_text(text: str, max_characters: int = 12_000) -> str:
     """Neutralize model control tokens and collapse unsafe control characters."""
     clean = "".join(
         character if character in "\n\t" or character.isprintable() else " " for character in text
@@ -29,42 +34,81 @@ def sanitize_retrieved_text(text: str, max_characters: int = 6_000) -> str:
     return clean[:max_characters]
 
 
-def chunk_document(text: str, chunk_characters: int = 2_000, overlap: int = 200) -> list[str]:
-    if chunk_characters <= overlap or overlap < 0:
+def chunk_document(
+    text: str, chunk_characters: int = 2_000, overlap_characters: int = 200
+) -> list[str]:
+    """Create sentence-aware chunks while retaining a small boundary overlap."""
+    if chunk_characters <= overlap_characters or overlap_characters < 0:
         raise ValueError("chunk size must exceed a non-negative overlap")
-    normalized = re.sub(r"\s+", " ", text).strip()
+    normalized = re.sub(r"[ \t]+", " ", text).strip()
+    if not normalized:
+        return []
+    units = [
+        unit.strip()
+        for unit in re.split(r"(?<=[.!?])\s+|\n{2,}", normalized)
+        if unit.strip()
+    ]
     chunks: list[str] = []
-    for start in range(0, len(normalized), chunk_characters - overlap):
-        chunk = normalized[start : start + chunk_characters]
-        if chunk:
-            chunks.append(chunk)
-        if start + chunk_characters >= len(normalized):
-            break
+    current = ""
+    for unit in units:
+        if len(unit) > chunk_characters:
+            if current:
+                chunks.append(current)
+                current = ""
+            for start in range(0, len(unit), chunk_characters - overlap_characters):
+                piece = unit[start : start + chunk_characters]
+                if piece:
+                    chunks.append(piece)
+                if start + chunk_characters >= len(unit):
+                    break
+            continue
+        candidate = f"{current} {unit}".strip()
+        if current and len(candidate) > chunk_characters:
+            chunks.append(current)
+            overlap = current[-overlap_characters:] if overlap_characters else ""
+            current = f"{overlap} {unit}".strip()
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
     return chunks
 
 
-def build_wikipedia_index(documents: Iterable[dict[str, str]], output_directory: Path) -> int:
-    """Build a persistent BM25 index from id/title/url/text dictionaries."""
-    corpus: list[dict[str, str]] = []
-    for document in documents:
-        for position, content in enumerate(chunk_document(document["text"])):
-            corpus.append(
-                {
-                    "id": f"{document['id']}:{position}",
-                    "title": document["title"],
-                    "url": document["url"],
-                    "content": content,
-                }
-            )
-    if not corpus:
-        raise ValueError("cannot build an empty search index")
-    retriever = bm25s.BM25(corpus=corpus)
-    retriever.index(bm25s.tokenize([item["title"] + " " + item["content"] for item in corpus]))
-    output_directory.mkdir(parents=True, exist_ok=True)
-    retriever.save(output_directory, corpus=corpus)
-    metadata = {"documents": len(corpus), "format": 1}
-    (output_directory / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    return len(corpus)
+def canonicalize_url(url: str) -> str:
+    parsed = urlsplit(url.strip())
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    port = parsed.port
+    netloc = hostname
+    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        netloc = f"{hostname}:{port}"
+    path = re.sub(r"/{2,}", "/", parsed.path or "/")
+    tracking = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+    query = urlencode(
+        sorted(
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if not key.lower().startswith("utm_") and key.lower() not in tracking
+        )
+    )
+    return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def stable_source_id(provider: str, url: str) -> str:
+    digest = hashlib.sha256(canonicalize_url(url).encode()).hexdigest()[:20]
+    return f"{provider}:{digest}"
+
+
+def reciprocal_rank_fusion(
+    rankings: Sequence[Sequence[str]], constant: int = 60
+) -> dict[str, float]:
+    if constant <= 0:
+        raise ValueError("RRF constant must be positive")
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, identifier in enumerate(ranking, 1):
+            scores[identifier] = scores.get(identifier, 0.0) + 1.0 / (constant + rank)
+    return scores
 
 
 def stream_jsonl_documents(path: Path) -> Iterable[dict[str, str]]:
@@ -77,57 +121,33 @@ def stream_jsonl_documents(path: Path) -> Iterable[dict[str, str]]:
             yield {key: str(row[key]) for key in required}
 
 
-class LocalWikipediaSearchProvider:
-    def __init__(self, index_directory: Path) -> None:
-        self.retriever = bm25s.BM25.load(index_directory, load_corpus=True, mmap=True)
-
-    async def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
-        if not query.strip():
-            return []
-        documents, scores = self.retriever.retrieve(
-            bm25s.tokenize([query]), k=top_k, show_progress=False
-        )
-        results: list[SearchResult] = []
-        for document, score in zip(documents[0], scores[0], strict=True):
-            content = sanitize_retrieved_text(document["content"])
-            results.append(
-                SearchResult(
-                    id=document["id"],
-                    title=sanitize_retrieved_text(document["title"], 500),
-                    url=document["url"],
-                    snippet=content[:500],
-                    content=content,
-                    score=float(score),
-                )
-            )
-        return results
+if TYPE_CHECKING:
+    from .retrieval import LocalWikipediaSearchProvider, build_wikipedia_index
+    from .web_search import BraveWebSearchProvider
 
 
-class BraveWebSearchProvider:
-    endpoint = "https://api.search.brave.com/res/v1/web/search"
+def __getattr__(name: str) -> Any:
+    """Lazily preserve the original imports without creating module cycles."""
+    if name in {"LocalWikipediaSearchProvider", "build_wikipedia_index"}:
+        from . import retrieval
 
-    def __init__(self, api_key: str, timeout_seconds: float = 15.0) -> None:
-        if not api_key:
-            raise ValueError("Brave API key is required")
-        self.api_key = api_key
-        self.timeout_seconds = timeout_seconds
+        return getattr(retrieval, name)
+    if name == "BraveWebSearchProvider":
+        from .web_search import BraveWebSearchProvider
 
-    async def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
-        headers = {"Accept": "application/json", "X-Subscription-Token": self.api_key}
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.get(
-                self.endpoint, params={"q": query, "count": top_k}, headers=headers
-            )
-            response.raise_for_status()
-        rows = response.json().get("web", {}).get("results", [])[:top_k]
-        return [
-            SearchResult(
-                id=f"brave:{position}",
-                title=sanitize_retrieved_text(row.get("title", ""), 500),
-                url=row.get("url", ""),
-                snippet=sanitize_retrieved_text(row.get("description", ""), 500),
-                content=sanitize_retrieved_text(row.get("description", "")),
-                score=float(top_k - position),
-            )
-            for position, row in enumerate(rows)
-        ]
+        return BraveWebSearchProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+__all__ = [
+    "BraveWebSearchProvider",
+    "LocalWikipediaSearchProvider",
+    "Reranker",
+    "SearchProvider",
+    "build_wikipedia_index",
+    "canonicalize_url",
+    "chunk_document",
+    "reciprocal_rank_fusion",
+    "sanitize_retrieved_text",
+    "stable_source_id",
+    "stream_jsonl_documents",
+]

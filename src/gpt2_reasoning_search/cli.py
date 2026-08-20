@@ -22,19 +22,20 @@ from .evaluation import (
 from .experiment import write_experiment_plan
 from .model import GPT2ReasoningModel
 from .prepare import load_evaluation_prompts, prepare_token_corpora
+from .retrieval import (
+    LocalWikipediaSearchProvider,
+    SentenceTransformerEncoder,
+    build_wikipedia_index,
+)
 from .runner import ModelRunner
 from .schemas import AnswerRequest
-from .search import (
-    BraveWebSearchProvider,
-    LocalWikipediaSearchProvider,
-    build_wikipedia_index,
-    stream_jsonl_documents,
-)
+from .search import stream_jsonl_documents
 from .sft import fine_tune_tools
 from .smoke import tiny_overfit
 from .tokenizer import load_tokenizer, train_tokenizer
 from .train import train
 from .trajectories import generate_trajectories, stream_jsonl
+from .web_search import BraveWebSearchProvider, SQLiteSearchCache
 
 app = typer.Typer(
     name="gpt2-reasoning-search",
@@ -121,9 +122,24 @@ def pretrain_command(
 def build_index_command(
     documents: Path = typer.Argument(..., exists=True, readable=True),
     output: Path = typer.Option(Path("artifacts/wiki-index")),
+    lexical_only: bool = typer.Option(False, help="Skip semantic embeddings and build BM25 only"),
+    retrieval_config: Path = typer.Option(Path("config/retrieval.json"), exists=True),
+    embedding_device: str | None = typer.Option(None, help="cpu, cuda, or auto when omitted"),
 ) -> None:
-    """Build a local BM25 index from Wikipedia-style JSONL documents."""
-    count = build_wikipedia_index(stream_jsonl_documents(documents), output)
+    """Build local BM25 and semantic indexes from Wikipedia-style JSONL."""
+    settings = json.loads(retrieval_config.read_text())
+    model = settings["embedding_model"]
+    encoder = (
+        None
+        if lexical_only
+        else SentenceTransformerEncoder(model["name"], model["revision"], embedding_device)
+    )
+    count = build_wikipedia_index(
+        stream_jsonl_documents(documents),
+        output,
+        dense_encoder=encoder,
+        retrieval_config=retrieval_config,
+    )
     typer.echo(json.dumps({"chunks": count, "index": str(output)}))
 
 
@@ -155,9 +171,18 @@ def _load_agent(
     checkpoint: Path, tokenizer_path: Path, index: Path, enable_web: bool = True
 ) -> SearchAgent:
     runner = ModelRunner(checkpoint, tokenizer_path)
-    local = LocalWikipediaSearchProvider(index)
+    local = LocalWikipediaSearchProvider(index, enable_reranker=True)
     key = os.getenv("BRAVE_SEARCH_API_KEY")
-    web = BraveWebSearchProvider(key) if key and enable_web else None
+    web = (
+        BraveWebSearchProvider(
+            key,
+            cache=SQLiteSearchCache(
+                Path(os.getenv("GRS_SEARCH_CACHE", "artifacts/search-cache.sqlite3"))
+            ),
+        )
+        if key and enable_web
+        else None
+    )
     return SearchAgent(runner.generate, local, web)
 
 
