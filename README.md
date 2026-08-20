@@ -1,59 +1,105 @@
 # GPT-2 Reasoning Search
 
-A research prototype for training a modern GPT-2-style decoder from random initialization on a
-reasoning-heavy corpus, then teaching it to call deterministic local search or optional live web
-search. The project defaults to a 70% verified-reasoning / 30% educational-text token mixture.
+An English research prototype for training a modernized GPT-2-style decoder from random
+initialization, with a deliberately unusual **70% verified-reasoning / 30% educational-text**
+pretraining mixture, followed by supervised search-tool training.
 
-This repository contains the full data, training, indexing, evaluation, API, and CLI pipelines. It
-does not include downloaded corpora or trained weights.
+The repository contains reproducible data preparation, tokenizer, model, pretraining, hybrid
+Wikipedia retrieval, optional Brave web search, tool SFT, evaluation, CLI, and FastAPI serving.
+Downloaded data and trained weights are not included. A 350M model trained for one H100-day should
+be treated as a narrow experiment, not a production-grade general assistant.
 
-## Quick start
+## What is mainstream, and what is different?
+
+The model and systems stack follows common current practice: RoPE, RMSNorm, SwiGLU, grouped-query
+attention, PyTorch SDPA/Flash Attention, bf16, fused AdamW, gradient checkpointing, KV-cached
+generation, SafeTensors checkpoints, BM25+dense HNSW retrieval, reciprocal-rank fusion, cross-encoder
+reranking, validated JSON tools, bounded retries, caching, and service backpressure.
+
+The intentional research variable is the **data mixture**. Pretraining consumes exactly 70%
+reasoning and 30% general text by non-padding tokens. Equal-token 124M proxies at 0%, 30%, and 70%
+must be reported even when the 70% run does not win.
+
+## Install
 
 ```bash
-uv sync --dev
+git clone https://github.com/Playitcooool/gpt2-reasoning-search.git
+cd gpt2-reasoning-search
+uv sync --dev --locked
 uv run gpt2-reasoning-search --help
 ```
 
-The generated reasoning field is model-produced scratch work for research inspection. It is not a
-faithful explanation of the model's internal computation.
+Python 3.11 is pinned. See [the H100 runbook](docs/H100_RUNBOOK.md) before starting a GPU run.
 
-## Pipeline
+## Training pipeline
 
-The commands below intentionally separate preprocessing from the timed H100 run.
+Preprocessing is intentionally separate from the timed H100 window.
 
 ```bash
-# 1. Train the project tokenizer from representative plain-text samples.
-uv run gpt2-reasoning-search train-tokenizer data/tokenizer-sample/*.txt
+# Train the 50K BPE tokenizer from representative reasoning and education samples.
+uv run gpt2-reasoning-search train-tokenizer data/tokenizer-sample/*.txt \
+  --output artifacts/tokenizer.json --vocab-size 50304
 
-# 2. Stream the pinned corpora and create token arrays.
+# Stream pinned Hugging Face revisions, filter/deduplicate, and write memory-mapped arrays.
 uv run gpt2-reasoning-search prepare-data \
   --tokenizer-path artifacts/tokenizer.json \
-  --reasoning-token-cap 2000000000 --general-token-cap 1000000000
+  --manifest config/datasets.json \
+  --output data/processed \
+  --evaluation-prompts data/evaluation/contamination-prompts.jsonl \
+  --reasoning-token-cap 2000000000 \
+  --general-token-cap 1000000000
 
-# 3. Run the calibrated 70/30 main pretraining job on an H100.
-uv run gpt2-reasoning-search pretrain \
-  --reasoning-tokens data/processed/reasoning.npy \
-  --general-tokens data/processed/general.npy
-
-# Proxy mixture controls use --preset proxy-124m with --reasoning-ratio 0, 0.3, and 0.7.
-uv run gpt2-reasoning-search experiment-plan
+# Verify the small-model learning gate and write the one-H100 experiment schedule.
 uv run gpt2-reasoning-search smoke-overfit --device cpu
+uv run gpt2-reasoning-search experiment-plan
 
-# 4. Build deterministic retrieval and tool trajectories.
-uv run gpt2-reasoning-search build-index data/raw/wikipedia.jsonl
-uv run gpt2-reasoning-search make-trajectories data/raw/grounded-questions.jsonl
+# Main calibrated run. Use step-* or final as --resume-from after interruption.
+uv run gpt2-reasoning-search pretrain \
+  --reasoning-tokens data/processed/reasoning.bin \
+  --general-tokens data/processed/general.bin \
+  --output checkpoints/main-350m \
+  --preset main-350m --reasoning-ratio 0.70 --max-tokens 2500000000
+```
 
-# 5. Teach the pretrained model to call search.
+Each `.bin` has a manifest containing dtype, token count, hashes, source counts, verification counts,
+and rejection statistics. Training checkpoints include model, optimizer, scheduler, RNG, exact data
+cursors, and mixture counters.
+
+Run the matched proxies with `--preset proxy-124m` and reasoning ratios `0`, `0.3`, and `0.7`, then:
+
+```bash
+uv run gpt2-reasoning-search compare-proxies \
+  checkpoints/proxy-r0 checkpoints/proxy-r30 checkpoints/proxy-r70
+```
+
+## Search and tool fine-tuning
+
+Wikipedia JSONL rows require `id`, `title`, `url`, and `text`.
+
+```bash
+# Default: Tantivy BM25 + SentenceTransformer embeddings + USearch HNSW.
+uv run gpt2-reasoning-search build-index data/raw/wikipedia.jsonl \
+  --output artifacts/wiki-index
+
+# Or build a deterministic BM25-only index without model downloads.
+uv run gpt2-reasoning-search build-index data/raw/wikipedia.jsonl \
+  --output artifacts/wiki-index-lexical --lexical-only
+
+uv run gpt2-reasoning-search make-trajectories \
+  data/raw/grounded-questions.jsonl \
+  --output data/processed/tool-trajectories.jsonl
+
 uv run gpt2-reasoning-search sft-tools \
   --checkpoint checkpoints/main-350m/final \
   --tokenizer-path artifacts/tokenizer.json \
-  --trajectories data/processed/tool-trajectories.jsonl
+  --trajectories data/processed/tool-trajectories.jsonl \
+  --output checkpoints/tool-sft
 ```
 
-`wikipedia.jsonl` rows require `id`, `title`, `url`, and `text`. Grounded-question rows require
-`question` and `answer`; optional fields are `query`, `reasoning`, and an `evidence` array containing
-the public search-result schema (`id`, `title`, `url`, `snippet`, `content`, and optional `score`). A
-missing `query` deliberately produces a no-search training example.
+Trajectory rows may use the simple `query` + `evidence` form, omit `query` for no-search examples,
+or provide `searches`, an array of up to three `{query, evidence}` objects for multi-hop query
+reformulation. Retrieved observations and prompts are masked from loss; tool calls, generated
+reasoning, answers, and citations are trained.
 
 ## Serving
 
@@ -64,25 +110,29 @@ uv run gpt2-reasoning-search serve \
   --index artifacts/wiki-index
 ```
 
-`POST /v1/answer` accepts `query`, `search_mode` (`auto`, `local`, `web`, or `off`), and up to three
-searches. Live web search is enabled only when `BRAVE_SEARCH_API_KEY` is present. Retrieved text is
-treated as untrusted evidence, model control tokens in results are neutralized, and returned
-citations are restricted to source identifiers actually observed during the request.
+`POST /v1/answer` accepts `query`, `search_mode` (`auto`, `local`, `web`, or `off`), and
+`max_searches` from 0 to 3. `auto` uses the deterministic local index first and only falls back to
+web when configured and local retrieval fails or returns nothing. Set `BRAVE_SEARCH_API_KEY` to
+enable live search. Liveness, readiness, and service counters are exposed at `/health/live`,
+`/health/ready`, and `/metrics`.
+
+The response includes the answer, generated scratch work, citations, complete tool trace, finish
+reason, token counts, and timings. Scratch work is useful for research inspection but is not a
+faithful description of internal computation.
 
 ## Evaluation
 
-The scoring commands accept JSONL so benchmark generation can run independently or be distributed.
-Reasoning rows contain `task`, `prediction`, and `answer`. Grounded rows contain those answer fields
-plus `queries`, `retrieved_ids`, `supporting_ids`, `cited_ids`, `valid_tool_calls`, `search_required`,
-and `answer_found`.
-
 ```bash
+uv run gpt2-reasoning-search score-lm artifacts/fineweb-losses.jsonl
 uv run gpt2-reasoning-search score-reasoning artifacts/reasoning-predictions.jsonl
+uv run gpt2-reasoning-search benchmark-grounded data/evaluation/grounded.jsonl \
+  --checkpoint checkpoints/tool-sft \
+  --tokenizer-path artifacts/tokenizer.json \
+  --index artifacts/wiki-index --mode off --mode local
 uv run gpt2-reasoning-search score-grounded artifacts/grounded-predictions.jsonl
-uv run gpt2-reasoning-search compare-proxies \
-  checkpoints/proxy-r0 checkpoints/proxy-r30 checkpoints/proxy-r70
 ```
 
-Use a held-out FineWeb-Edu split for loss/perplexity; contamination-filtered GSM8K, MATH-500,
-HumanEval+/MBPP, and logical-reasoning records for reasoning; and a frozen local-index HotpotQA-style
-set for retrieval. Reports must show the proxy controls even if the 70% mixture loses.
+Reports include answer EM/F1, retrieval Recall/MRR/nDCG, citation precision/recall/validity, valid
+tool-call rate, unnecessary-search and query-recovery rates, latency percentiles, and per-mode
+search-off/search-on comparisons. See [evaluation protocol](docs/EVALUATION.md),
+[data provenance](docs/DATA.md), [architecture](docs/ARCHITECTURE.md), and [security](SECURITY.md).

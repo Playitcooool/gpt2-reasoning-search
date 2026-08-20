@@ -82,23 +82,29 @@ def test_grounded_metrics_cover_retrieval_citations_tools_and_recovery() -> None
         ]
     )
 
-    assert report == {
-        "count": 2,
-        "answer_exact_match": 1.0,
-        "retrieval_recall": 0.25,
-        "citation_precision": 0.75,
-        "valid_tool_call_rate": 0.5,
-        "search_rate": 1.0,
-        "unnecessary_search_rate": 0.5,
-        "query_recovery_rate": 0.5,
-    }
+    assert report["count"] == 2
+    assert report["answer_exact_match"] == 1.0
+    assert report["answer_token_f1"] == 1.0
+    assert report["retrieval_recall"] == 0.75
+    assert report["citation_precision"] == 0.75
+    assert report["citation_recall"] == 0.75
+    assert report["citation_validity"] == 0.75
+    assert report["valid_tool_call_rate"] == pytest.approx(2 / 3)
+    assert report["search_rate"] == 1.0
+    assert report["unnecessary_search_rate"] == 0.5
+    assert report["query_recovery_rate"] == 1.0
 
 
 def test_grounded_metrics_empty_input_has_finite_zero_rates() -> None:
     report = score_grounded_records([])
 
     assert report["count"] == 0
-    assert all(value == 0.0 for key, value in report.items() if key != "count")
+    assert report["valid_tool_call_rate"] == 1.0
+    assert all(
+        value == 0.0
+        for key, value in report.items()
+        if key not in {"count", "valid_tool_call_rate"}
+    )
 
 
 def test_perplexity_caps_extreme_loss() -> None:
@@ -209,6 +215,6 @@ def test_readme_documents_complete_pipeline_and_generated_reasoning_warning() ->
         "compare-proxies",
     ):
         assert command in readme
-    assert "not a faithful explanation" in " ".join(readme.split())
+    assert "not a faithful description" in " ".join(readme.split())
     assert "full commit hash" in data_guide
-    assert "Common Crawl terms" in data_guide
+    assert "Common Crawl obligations" in data_guide

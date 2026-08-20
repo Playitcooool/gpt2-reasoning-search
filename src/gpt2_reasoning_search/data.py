@@ -110,9 +110,7 @@ class ExactTokenMixture:
         actual_count = min(count, total_quota - emitted)
         if actual_count <= 0:
             raise StopIteration
-        target_reasoning = round(
-            (emitted + actual_count) * self.quotas["reasoning"] / total_quota
-        )
+        target_reasoning = round((emitted + actual_count) * self.quotas["reasoning"] / total_quota)
         reasoning_count = target_reasoning - self.state.reasoning_tokens
         general_count = actual_count - reasoning_count
         if not 0 <= reasoning_count <= self._remaining("reasoning"):
@@ -297,6 +295,7 @@ def write_token_file(
         "dtype": dtype.name,
         "vocab_size": vocab_size,
         "tokens": written,
+        "bytes": output_path.stat().st_size,
         "documents": documents_written,
         "duplicates_removed": duplicates,
         "contaminated_removed": contaminated,

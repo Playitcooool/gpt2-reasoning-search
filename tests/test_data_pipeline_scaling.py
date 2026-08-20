@@ -18,6 +18,7 @@ from gpt2_reasoning_search.data import (
 )
 from gpt2_reasoning_search.prepare import (
     _general_rejection,
+    _verify_reasoning_row,
     load_dataset_manifest,
     load_evaluation_prompts,
     prepare_token_corpora,
@@ -212,6 +213,126 @@ def test_general_quality_filter_categories(text: str, reason: str | None) -> Non
     assert _general_rejection(text) == reason
 
 
+@pytest.mark.parametrize(
+    ("metadata", "reason"),
+    [
+        ({"language": "fr", "language_score": 1.0, "score": 5}, "non_english"),
+        ({"language": "en", "language_score": 0.64, "score": 5}, "low_language_score"),
+        ({"language": "eng", "language_score": 0.65, "score": 2.99}, "low_education_score"),
+        ({"language": "english", "language_score": 0.65, "int_score": 3}, None),
+        ({}, None),
+    ],
+)
+def test_general_quality_filter_uses_available_language_and_education_metadata(
+    metadata: dict[str, object], reason: str | None
+) -> None:
+    text = "A useful educational paragraph with facts. " * 10
+
+    assert _general_rejection(text, metadata) == reason
+
+
+@pytest.mark.parametrize(
+    ("row", "source", "answer", "expected"),
+    [
+        (
+            {"domain": "math", "reference_answer": "3/4"},
+            "OpenThoughts-114k",
+            r"$\boxed{3/4}$.",
+            (True, "local-math-final-answer"),
+        ),
+        (
+            {"domain": "math", "reference_answer": "3/4"},
+            "OpenThoughts-114k",
+            "1/4",
+            (False, "local-math-final-answer"),
+        ),
+        (
+            {"category": "logic puzzle", "ground_truth": "C"},
+            "OpenThoughts-114k",
+            "Option C",
+            (True, "local-logic-answer"),
+        ),
+        (
+            {"category": "logic puzzle", "ground_truth": "C"},
+            "OpenThoughts-114k",
+            "Option B",
+            (False, "local-logic-answer"),
+        ),
+        ({}, "OpenR1-Math-220k", "42", (True, "upstream-math-verified")),
+        ({}, "OpenThoughts-114k", "42", (True, "upstream-curated")),
+    ],
+)
+def test_reasoning_verification_selects_local_checks_or_explicit_upstream_provenance(
+    row: dict[str, object], source: str, answer: str, expected: tuple[bool, str]
+) -> None:
+    assert _verify_reasoning_row(row, source, "response", answer) == expected
+
+
+def test_reasoning_code_verification_uses_tests_and_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Result:
+        passed = False
+
+    def fake_verify(code: str, tests: str) -> Result:
+        calls.append((code, tests))
+        return Result()
+
+    monkeypatch.setattr("gpt2_reasoning_search.prepare.verify_python_code", fake_verify)
+    row = {
+        "code": "def add(a, b): return a - b",
+        "tests": ["assert add(2, 3) == 5", "assert add(0, 0) == 0"],
+    }
+
+    result = _verify_reasoning_row(row, "OpenThoughts-114k", "response", "answer")
+
+    assert result == (False, "local-code-tests")
+    assert calls == [
+        (
+            "def add(a, b): return a - b",
+            "assert add(2, 3) == 5\nassert add(0, 0) == 0",
+        )
+    ]
+
+
+def test_reasoning_stream_rejects_failed_local_verification_with_accurate_stats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        {
+            "source": "OpenR1-Math-220k",
+            "prompt": "Compute",
+            "response": "<think>work</think><answer>42</answer>",
+            "expected_answer": "42",
+        },
+        {
+            "source": "OpenR1-Math-220k",
+            "prompt": "Compute",
+            "response": "<think>bad work</think><answer>41</answer>",
+            "expected_answer": "42",
+        },
+    ]
+    monkeypatch.setattr(
+        "gpt2_reasoning_search.prepare.stream_huggingface_texts",
+        lambda *args, **kwargs: iter(rows),
+    )
+    stats = PreparationStats()
+
+    documents = list(stream_reasoning_documents(_manifest(tmp_path), stats))
+
+    assert len(documents) == 1
+    assert documents[0].verification == "local-math-final-answer"
+    assert stats.to_dict() == {
+        "rows_seen": 2,
+        "rows_accepted": 1,
+        "rows_rejected": 1,
+        "rejection_reasons": {"local-math-final-answer_failed": 1},
+        "accepted_sources": {"OpenR1-Math-220k": 1},
+    }
+
+
 def test_general_stream_records_filtering_and_source_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -352,6 +473,8 @@ def test_token_report_hashes_bytes_tokenizer_sources_verification_and_filter_sta
     persisted = json.loads(output.with_suffix(".manifest.json").read_text())
 
     assert report == persisted
+    assert report["bytes"] == output.stat().st_size
+    assert report["bytes"] == report["tokens"] * np.dtype(report["dtype"]).itemsize
     assert report["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     assert report["tokenizer_sha256"] == hashlib.sha256(tokenizer.to_str().encode()).hexdigest()
     assert report["source_documents"] == {"source-a": 2}

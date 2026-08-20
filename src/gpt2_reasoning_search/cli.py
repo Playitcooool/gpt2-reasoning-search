@@ -12,7 +12,9 @@ from .api import create_app
 from .config import ModelConfig, TrainConfig
 from .evaluation import (
     compare_proxy_runs,
+    run_grounded_benchmark,
     score_grounded_records,
+    score_language_model_records,
     score_reasoning_records,
     write_report,
 )
@@ -47,7 +49,7 @@ app = typer.Typer(
 @app.command()
 def version() -> None:
     """Print the package version."""
-    typer.echo("0.1.0")
+    typer.echo("0.2.0")
 
 
 @app.command("model-info")
@@ -261,6 +263,17 @@ def score_reasoning_command(
     typer.echo(json.dumps(report, indent=2))
 
 
+@app.command("score-lm")
+def score_lm_command(
+    losses: Path = typer.Argument(..., exists=True, readable=True),
+    output: Path = typer.Option(Path("artifacts/language-model-report.json")),
+) -> None:
+    """Aggregate token-weighted held-out losses and perplexity."""
+    report = score_language_model_records(stream_evaluation_jsonl(losses))
+    write_report(report, output)
+    typer.echo(json.dumps(report, indent=2))
+
+
 @app.command("score-grounded")
 def score_grounded_command(
     predictions: Path = typer.Argument(..., exists=True, readable=True),
@@ -270,6 +283,43 @@ def score_grounded_command(
     report = score_grounded_records(stream_evaluation_jsonl(predictions))
     write_report(report, output)
     typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("benchmark-grounded")
+def benchmark_grounded_command(
+    examples: Path = typer.Argument(..., exists=True, readable=True),
+    checkpoint: Path = typer.Option(..., exists=True),
+    tokenizer_path: Path = typer.Option(..., exists=True),
+    index: Path = typer.Option(..., exists=True),
+    output: Path = typer.Option(Path("artifacts/grounded-predictions.jsonl")),
+    modes: list[str] = typer.Option(["off", "local"], "--mode"),
+    max_searches: int = typer.Option(3, min=0, max=3),
+) -> None:
+    """Run matched search-off/search-on grounded evaluation records."""
+    allowed = {"off", "local", "web", "auto"}
+    if not modes or any(mode not in allowed for mode in modes):
+        raise typer.BadParameter("mode must be one of off, local, web, or auto")
+    agent = _load_agent(
+        checkpoint,
+        tokenizer_path,
+        index,
+        enable_web=bool({"web", "auto"} & set(modes)),
+    )
+
+    async def run() -> int:
+        try:
+            return await run_grounded_benchmark(
+                agent,
+                stream_evaluation_jsonl(examples),
+                output,
+                modes,
+                max_searches,
+            )
+        finally:
+            await agent.aclose()
+
+    count = asyncio.run(run())
+    typer.echo(json.dumps({"records": count, "output": str(output)}))
 
 
 @app.command("compare-proxies")

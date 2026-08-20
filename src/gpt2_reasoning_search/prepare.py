@@ -18,6 +18,7 @@ from .data import (
     stream_huggingface_texts,
     write_token_file,
 )
+from .verifiers import normalize_math_answer, verify_logic_choice, verify_python_code
 
 
 def load_dataset_manifest(path: Path) -> dict[str, dict[str, Any]]:
@@ -66,6 +67,41 @@ def _reasoning_rejection(row: dict[str, Any], included_sources: set[str]) -> str
     return None
 
 
+def _verify_reasoning_row(
+    row: dict[str, Any], source: str, response: str, answer: str
+) -> tuple[bool, str]:
+    domain = " ".join(
+        str(row.get(field, "")) for field in ("domain", "task", "category", "problem_type")
+    ).lower()
+    reference = next(
+        (
+            str(row[field])
+            for field in ("expected_answer", "reference_answer", "ground_truth", "answer")
+            if row.get(field) is not None and str(row[field]).strip()
+        ),
+        None,
+    )
+    tests = row.get("tests") or row.get("test_code")
+    if tests is not None:
+        code = str(row.get("code", "")).strip()
+        if not code:
+            fenced = re.findall(r"```(?:python)?\s*(.*?)```", response, re.DOTALL | re.IGNORECASE)
+            code = fenced[-1].strip() if fenced else answer
+        test_text = "\n".join(map(str, tests)) if isinstance(tests, list) else str(tests)
+        result = verify_python_code(code, test_text)
+        return result.passed, "local-code-tests"
+    if reference is not None and any(label in domain for label in ("logic", "choice", "puzzle")):
+        return verify_logic_choice(answer, reference), "local-logic-answer"
+    if reference is not None and (source == "OpenR1-Math-220k" or "math" in domain):
+        return (
+            normalize_math_answer(answer) == normalize_math_answer(reference),
+            "local-math-final-answer",
+        )
+    if source == "OpenR1-Math-220k":
+        return True, "upstream-math-verified"
+    return True, "upstream-curated"
+
+
 def stream_reasoning_documents(
     manifest_path: Path, stats: PreparationStats | None = None
 ) -> Iterator[PreparedDocument]:
@@ -90,9 +126,10 @@ def stream_reasoning_documents(
         reasoning = _extract_tag(response, "think")
         answer = _extract_tag(response, "answer")
         assert reasoning is not None and answer is not None
-        verification = (
-            "upstream-math-verified" if source == "OpenR1-Math-220k" else "upstream-curated"
-        )
+        verified, verification = _verify_reasoning_row(row, source, response, answer)
+        if not verified:
+            stats.reject(f"{verification}_failed")
+            continue
         stats.accept(source)
         yield PreparedDocument(
             reasoning_document(prompt, reasoning, answer),
@@ -101,7 +138,7 @@ def stream_reasoning_documents(
         )
 
 
-def _general_rejection(text: str) -> str | None:
+def _general_rejection(text: str, metadata: dict[str, Any] | None = None) -> str | None:
     if len(text) < 200:
         return "too_short"
     if len(text) > 200_000:
@@ -115,6 +152,16 @@ def _general_rejection(text: str) -> str | None:
     lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
     if len(lines) >= 10 and len(set(lines)) / len(lines) < 0.5:
         return "repetitive_lines"
+    if metadata is not None:
+        language = str(metadata.get("language", "en")).lower()
+        if language not in {"en", "eng", "english"}:
+            return "non_english"
+        language_score = metadata.get("language_score")
+        if language_score is not None and float(language_score) < 0.65:
+            return "low_language_score"
+        education_score = metadata.get("score", metadata.get("int_score"))
+        if education_score is not None and float(education_score) < 3.0:
+            return "low_education_score"
     return None
 
 
@@ -132,7 +179,7 @@ def stream_general_documents(
     ):
         stats.rows_seen += 1
         text = str(row["text"]).strip()
-        rejection = _general_rejection(text)
+        rejection = _general_rejection(text, row)
         if rejection:
             stats.reject(rejection)
             continue
@@ -168,9 +215,7 @@ def prepare_token_corpora(
     evaluation_prompts: Sequence[str] = (),
 ) -> dict[str, dict]:
     output_directory.mkdir(parents=True, exist_ok=True)
-    contamination_filter = (
-        ContaminationFilter(evaluation_prompts) if evaluation_prompts else None
-    )
+    contamination_filter = ContaminationFilter(evaluation_prompts) if evaluation_prompts else None
     reasoning_stats = PreparationStats()
     general_stats = PreparationStats()
     reports = {

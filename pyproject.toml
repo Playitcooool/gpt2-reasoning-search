@@ -1,18 +1,16 @@
 [project]
 name = "gpt2-reasoning-search"
-version = "0.1.0"
+version = "0.2.0"
 description = "Train a small GPT-2-style reasoning model and ground it with search tools"
 authors = [
     { name = "Playitcool_", email = "129354153+Playitcooool@users.noreply.github.com" }
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "bm25s>=0.2.14",
     "datasets>=4.0.0",
     "fastapi>=0.116.0",
     "httpx>=0.28.0",
     "numpy>=2.0.0",
-    "pydantic-settings>=2.10.0",
     "safetensors>=0.5.0",
     "sentence-transformers>=5.1.0",
     "tantivy>=0.25.0",
