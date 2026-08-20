@@ -21,7 +21,7 @@ from .evaluation import (
 )
 from .experiment import write_experiment_plan
 from .model import GPT2ReasoningModel
-from .prepare import prepare_token_corpora
+from .prepare import load_evaluation_prompts, prepare_token_corpora
 from .runner import ModelRunner
 from .schemas import AnswerRequest
 from .search import (
@@ -77,6 +77,9 @@ def prepare_data_command(
     output: Path = typer.Option(Path("data/processed")),
     reasoning_token_cap: int = typer.Option(2_000_000_000),
     general_token_cap: int = typer.Option(1_000_000_000),
+    evaluation_prompts: Path | None = typer.Option(
+        None, exists=True, help="JSONL or text prompts to exclude from training"
+    ),
 ) -> None:
     """Stream, normalize, deduplicate, and tokenize the pinned corpora."""
     reports = prepare_token_corpora(
@@ -85,6 +88,7 @@ def prepare_data_command(
         output,
         reasoning_token_cap,
         general_token_cap,
+        load_evaluation_prompts(evaluation_prompts),
     )
     typer.echo(json.dumps(reports, indent=2))
 

@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 import torch
 
-from gpt2_reasoning_search.data import ExactTokenMixture, MixtureState, write_token_file
+from gpt2_reasoning_search.data import (
+    ExactTokenMixture,
+    MixtureState,
+    load_token_array,
+    write_token_file,
+)
 from gpt2_reasoning_search.tokenizer import train_tokenizer
 
 
@@ -161,11 +166,11 @@ def test_write_token_file_deduplicates_and_records_hash(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_text("alpha beta gamma delta")
     tokenizer = train_tokenizer([corpus], tmp_path / "tokenizer.json", vocab_size=300)
-    output = tmp_path / "tokens.npy"
+    output = tmp_path / "tokens.bin"
 
     report = write_token_file(tokenizer, ["alpha beta", "alpha beta", "gamma"], output, 100)
 
-    tokens = np.load(output)
+    tokens = load_token_array(output)
     assert report["duplicates_removed"] == 1
     assert report["tokens"] == len(tokens)
     assert len(str(report["sha256"])) == 64

@@ -15,7 +15,7 @@ import torch
 
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ModelConfig, TrainConfig
-from .data import ExactTokenMixture, MixtureState
+from .data import ExactTokenMixture, MixtureState, load_token_array
 from .model import GPT2ReasoningModel
 
 
@@ -131,10 +131,12 @@ def train(config: TrainConfig, resume_from: Path | None = None) -> Path:
         fused=config.fused_optimizer,
     )
 
-    reasoning = np.load(config.reasoning_tokens, mmap_mode="r")
-    general = np.load(config.general_tokens, mmap_mode="r")
+    reasoning = load_token_array(config.reasoning_tokens)
+    general = load_token_array(config.general_tokens)
     quantum = config.tokens_per_optimizer_step
     maximum_budget = config.max_tokens // quantum * quantum
+    if maximum_budget < quantum:
+        raise ValueError("max_tokens must cover at least one optimizer step")
     scheduler = TokenCosineScheduler(
         optimizer,
         config.learning_rate,

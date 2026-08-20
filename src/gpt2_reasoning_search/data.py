@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import sqlite3
+import tempfile
+from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +29,37 @@ class MixtureState:
     @property
     def total_tokens(self) -> int:
         return self.reasoning_tokens + self.general_tokens
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedDocument:
+    text: str
+    source: str
+    verification: str = "source-curated"
+
+
+@dataclass(slots=True)
+class PreparationStats:
+    rows_seen: int = 0
+    rows_accepted: int = 0
+    rejection_reasons: Counter[str] = field(default_factory=Counter)
+    accepted_sources: Counter[str] = field(default_factory=Counter)
+
+    def accept(self, source: str) -> None:
+        self.rows_accepted += 1
+        self.accepted_sources[source] += 1
+
+    def reject(self, reason: str) -> None:
+        self.rejection_reasons[reason] += 1
+
+    def to_dict(self) -> dict:
+        return {
+            "rows_seen": self.rows_seen,
+            "rows_accepted": self.rows_accepted,
+            "rows_rejected": self.rows_seen - self.rows_accepted,
+            "rejection_reasons": dict(sorted(self.rejection_reasons.items())),
+            "accepted_sources": dict(sorted(self.accepted_sources.items())),
+        }
 
 
 class ExactTokenMixture:
@@ -134,6 +169,26 @@ def normalized_hash(text: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()
 
 
+class SQLiteDeduplicator:
+    """Bound exact-dedup memory by storing hashes in a temporary SQLite index."""
+
+    def __init__(self, path: Path) -> None:
+        self.connection = sqlite3.connect(path)
+        self.connection.execute("PRAGMA journal_mode=OFF")
+        self.connection.execute("PRAGMA synchronous=OFF")
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS hashes (digest TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+
+    def add(self, digest: str) -> bool:
+        cursor = self.connection.execute("INSERT OR IGNORE INTO hashes VALUES (?)", (digest,))
+        return cursor.rowcount == 1
+
+    def close(self) -> None:
+        self.connection.commit()
+        self.connection.close()
+
+
 def reasoning_document(problem: str, reasoning: str, answer: str) -> str:
     return (
         f"<|problem|>\n{problem.strip()}\n<|reasoning|>\n{reasoning.strip()}\n"
@@ -156,32 +211,118 @@ def stream_huggingface_texts(
 
 def write_token_file(
     tokenizer: Tokenizer,
-    documents: Iterable[str],
+    documents: Iterable[str | PreparedDocument],
     output_path: Path,
     max_tokens: int,
-) -> dict[str, int | str]:
+    *,
+    batch_size: int = 256,
+    contamination_filter: ContaminationFilter | None = None,
+    preparation_stats: PreparationStats | None = None,
+) -> dict:
+    """Tokenize in batches and stream directly to disk without corpus-sized RAM use."""
+    if max_tokens <= 0 or batch_size <= 0:
+        raise ValueError("max_tokens and batch_size must be positive")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    pieces: list[np.ndarray] = []
-    seen: set[str] = set()
-    written = duplicates = 0
-    for document in documents:
-        digest = normalized_hash(document)
-        if digest in seen:
-            duplicates += 1
-            continue
-        seen.add(digest)
-        ids = np.asarray(tokenizer.encode(document).ids, dtype=np.uint32)
-        ids = ids[: max_tokens - written]
-        pieces.append(ids)
-        written += len(ids)
-        if written >= max_tokens:
-            break
-    tokens = np.concatenate(pieces) if pieces else np.empty(0, dtype=np.uint32)
-    np.save(output_path, tokens)
+    vocab_size = tokenizer.get_vocab_size(with_added_tokens=True)
+    dtype = np.dtype("uint16" if vocab_size <= np.iinfo(np.uint16).max else "uint32")
+    content_hash = hashlib.sha256()
+    written = duplicates = contaminated = documents_written = truncated = 0
+    source_counts: Counter[str] = Counter()
+    verification_counts: Counter[str] = Counter()
+    pending: list[PreparedDocument] = []
+
+    def normalized(document: str | PreparedDocument) -> PreparedDocument:
+        if isinstance(document, PreparedDocument):
+            return document
+        return PreparedDocument(text=document, source="unspecified")
+
+    def flush(handle) -> bool:
+        nonlocal written, documents_written, truncated
+        if not pending:
+            return False
+        encodings = tokenizer.encode_batch([document.text for document in pending])
+        reached_cap = False
+        for document, encoding in zip(pending, encodings, strict=True):
+            remaining = max_tokens - written
+            if remaining <= 0:
+                reached_cap = True
+                break
+            ids = np.asarray(encoding.ids[:remaining], dtype=dtype)
+            payload = ids.tobytes(order="C")
+            handle.write(payload)
+            content_hash.update(payload)
+            written += len(ids)
+            documents_written += 1
+            source_counts[document.source] += 1
+            verification_counts[document.verification] += 1
+            if len(ids) < len(encoding.ids):
+                truncated += 1
+                reached_cap = True
+                break
+        pending.clear()
+        return reached_cap
+
+    temporary_output = output_path.with_suffix(output_path.suffix + ".partial")
+    dedup_handle = tempfile.NamedTemporaryFile(
+        dir=output_path.parent, prefix="dedup-", suffix=".sqlite3", delete=False
+    )
+    dedup_path = Path(dedup_handle.name)
+    dedup_handle.close()
+    deduplicator = SQLiteDeduplicator(dedup_path)
+    try:
+        with temporary_output.open("wb") as handle:
+            for raw_document in documents:
+                document = normalized(raw_document)
+                if contamination_filter and contamination_filter.contaminated(document.text):
+                    contaminated += 1
+                    continue
+                if not deduplicator.add(normalized_hash(document.text)):
+                    duplicates += 1
+                    continue
+                pending.append(document)
+                if len(pending) >= batch_size and flush(handle):
+                    break
+            else:
+                flush(handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_output, output_path)
+    finally:
+        deduplicator.close()
+        dedup_path.unlink(missing_ok=True)
+        temporary_output.unlink(missing_ok=True)
+
     report = {
-        "tokens": int(len(tokens)),
+        "format_version": 2,
+        "dtype": dtype.name,
+        "vocab_size": vocab_size,
+        "tokens": written,
+        "documents": documents_written,
         "duplicates_removed": duplicates,
-        "sha256": hashlib.sha256(tokens.tobytes()).hexdigest(),
+        "contaminated_removed": contaminated,
+        "truncated_documents": truncated,
+        "source_documents": dict(sorted(source_counts.items())),
+        "verification": dict(sorted(verification_counts.items())),
+        "tokenizer_sha256": hashlib.sha256(tokenizer.to_str().encode()).hexdigest(),
+        "sha256": content_hash.hexdigest(),
     }
-    output_path.with_suffix(".manifest.json").write_text(json.dumps(report, indent=2) + "\n")
+    if preparation_stats is not None:
+        report["filtering"] = preparation_stats.to_dict()
+    manifest_path = output_path.with_suffix(".manifest.json")
+    manifest_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return report
+
+
+def load_token_array(path: Path) -> np.ndarray:
+    """Load scalable raw token streams and legacy NumPy arrays read-only."""
+    if path.suffix == ".npy":
+        return np.load(path, mmap_mode="r")
+    manifest_path = path.with_suffix(".manifest.json")
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"token manifest not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
+    dtype = np.dtype(manifest["dtype"])
+    expected_bytes = int(manifest["tokens"]) * dtype.itemsize
+    if path.stat().st_size != expected_bytes:
+        raise ValueError("token file size does not match its manifest")
+    return np.memmap(path, dtype=dtype, mode="r", shape=(int(manifest["tokens"]),))

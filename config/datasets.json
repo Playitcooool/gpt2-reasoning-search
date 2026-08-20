@@ -1,8 +1,10 @@
 {
   "allenai/big-reasoning-traces": {
     "revision": "5cc07ee9e71a1a642aeb130438452d7e63c5cc5e",
+    "config": "DeepSeek",
     "license": "per-source permissive licenses; see upstream dataset card",
-    "role": "reasoning"
+    "role": "reasoning",
+    "included_sources": ["OpenThoughts-114k", "OpenR1-Math-220k"]
   },
   "open-r1/OpenR1-Math-220k": {
     "revision": "e4e141ec9dea9f8326f4d347be56105859b2bd68",
