@@ -22,6 +22,7 @@ from .evaluation import (
     stream_jsonl as stream_evaluation_jsonl,
 )
 from .experiment import write_experiment_plan
+from .judge import DEFAULT_QWEN_JUDGE_MODEL, DEFAULT_QWEN_JUDGE_REVISION
 from .model import GPT2ReasoningModel
 from .prepare import load_evaluation_prompts, prepare_token_corpora
 from .retrieval import (
@@ -50,7 +51,7 @@ app = typer.Typer(
 @app.command()
 def version() -> None:
     """Print the package version."""
-    typer.echo("0.2.0")
+    typer.echo("0.3.0")
 
 
 @app.command("model-info")
@@ -199,8 +200,19 @@ def rl_search_command(
     resume_from: Path | None = typer.Option(None, exists=True),
     enable_reranker: bool = typer.Option(False),
     retrieval_device: str = typer.Option("cpu"),
+    llm_judge: bool = typer.Option(True, "--llm-judge/--no-llm-judge"),
+    judge_model: str = typer.Option(DEFAULT_QWEN_JUDGE_MODEL),
+    judge_revision: str | None = typer.Option(
+        None, help="Pinned model revision; defaults only for Qwen3.5-2B"
+    ),
+    judge_device: str = typer.Option("cuda"),
 ) -> None:
     """Optimize QA and search behavior with grouped online RL rollouts."""
+    resolved_judge_revision = judge_revision
+    if llm_judge and resolved_judge_revision is None:
+        if judge_model != DEFAULT_QWEN_JUDGE_MODEL:
+            raise typer.BadParameter("custom --judge-model requires --judge-revision")
+        resolved_judge_revision = DEFAULT_QWEN_JUDGE_REVISION
     config = SearchRLConfig(
         checkpoint_directory=checkpoint,
         tokenizer_path=tokenizer_path,
@@ -215,6 +227,9 @@ def rl_search_command(
         resume_from=resume_from,
         enable_reranker=enable_reranker,
         retrieval_device=retrieval_device,
+        judge_model=judge_model if llm_judge else None,
+        judge_revision=resolved_judge_revision if llm_judge else None,
+        judge_device=judge_device,
     )
     typer.echo(str(train_search_rl(config)))
 

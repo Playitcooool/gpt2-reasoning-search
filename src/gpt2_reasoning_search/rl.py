@@ -7,6 +7,7 @@ import json
 import math
 import random
 import re
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from .agent import SearchAgent
 from .checkpoint import load_checkpoint, load_model_weights, save_checkpoint
 from .config import ModelConfig
 from .evaluation import exact_match, strip_citation_markers, token_f1
+from .judge import JudgeScore, QwenRewardJudge
 from .model import GPT2ReasoningModel
 from .retrieval import LocalWikipediaSearchProvider
 from .schemas import AnswerRequest, AnswerResponse
@@ -39,6 +41,10 @@ class RewardWeights:
     unnecessary_search: float = -0.10
     invalid_tool_call: float = -0.25
     search_cost: float = -0.02
+    judge_answer_correctness: float = 0.20
+    judge_evidence_support: float = 0.15
+    judge_search_quality: float = 0.05
+    judge_valid: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +69,11 @@ class SearchRLConfig:
     seed: int = 42
     enable_reranker: bool = False
     retrieval_device: str = "cpu"
+    judge_model: str | None = None
+    judge_revision: str | None = None
+    judge_device: str = "cuda"
+    judge_max_input_tokens: int = 4096
+    judge_max_new_tokens: int = 128
     resume_from: Path | None = None
 
     def __post_init__(self) -> None:
@@ -80,6 +91,14 @@ class SearchRLConfig:
             raise ValueError("save_every_steps must be positive")
         if self.retrieval_device not in {"cpu", "cuda"}:
             raise ValueError("retrieval_device must be cpu or cuda")
+        if self.judge_device not in {"cpu", "cuda"}:
+            raise ValueError("judge_device must be cpu or cuda")
+        if self.judge_max_input_tokens < 256 or self.judge_max_new_tokens < 16:
+            raise ValueError("invalid judge token limits")
+        if self.judge_model and not self.judge_revision:
+            raise ValueError("judge_revision is required when judge_model is enabled")
+        if self.judge_revision and re.fullmatch(r"[0-9a-f]{40}", self.judge_revision) is None:
+            raise ValueError("judge_revision must be a full lowercase commit hash")
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +196,8 @@ def stream_rl_prompts(path: Path) -> Iterator[dict[str, Any]]:
                 isinstance(value, str) for value in supporting
             ):
                 raise ValueError(f"RL prompt line {line_number} has invalid supporting_ids")
+            if "search_required" in row and not isinstance(row["search_required"], bool):
+                raise ValueError(f"RL prompt line {line_number} has invalid search_required")
             yield row
 
 
@@ -185,6 +206,7 @@ def score_search_reward(
     response: AnswerResponse,
     raw_final_output: str,
     weights: RewardWeights | None = None,
+    judge_score: JudgeScore | None = None,
 ) -> RewardResult:
     weights = weights or RewardWeights()
     claimed_ids = list(dict.fromkeys(re.findall(r"<\|citation\|>([^\s<]+)", raw_final_output)))
@@ -248,6 +270,16 @@ def score_search_reward(
         "unnecessary_search": unnecessary,
         "invalid_tool_call": float(invalid),
         "search_cost": float(response.searches_used),
+        "judge_answer_correctness": (
+            judge_score.answer_correctness if judge_score and judge_score.valid else 0.0
+        ),
+        "judge_evidence_support": (
+            judge_score.evidence_support if judge_score and judge_score.valid else 0.0
+        ),
+        "judge_search_quality": (
+            judge_score.search_quality if judge_score and judge_score.valid else 0.0
+        ),
+        "judge_valid": float(bool(judge_score and judge_score.valid)),
     }
     total = sum(getattr(weights, name) * value for name, value in components.items())
     return RewardResult(total, components)
@@ -360,6 +392,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
         model_device=config.retrieval_device,
     )
     agent = SearchAgent(generator, provider)
+    judge: QwenRewardJudge | None = None
     config.output_directory.mkdir(parents=True, exist_ok=True)
     metrics_path = config.output_directory / "metrics.jsonl"
     checkpoint_config = {
@@ -369,6 +402,14 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
     }
 
     try:
+        if config.judge_model and config.judge_revision:
+            judge = QwenRewardJudge(
+                config.judge_model,
+                config.judge_revision,
+                device=config.judge_device,
+                max_input_tokens=config.judge_max_input_tokens,
+                max_new_tokens=config.judge_max_new_tokens,
+            )
         with metrics_path.open("a") as metrics:
             for epoch in range(start_epoch, config.epochs):
                 for prompt_index, row in enumerate(prompts):
@@ -387,8 +428,25 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                             )
                         )
                         raw_final = generator.outputs[-1] if generator.outputs else ""
-                        reward = score_search_reward(row, response, raw_final, reward_weights)
-                        rollout_records.append((tuple(generator.segments), response, reward))
+                        judge_started = time.perf_counter()
+                        judge_score = (
+                            judge.score(row["question"], row["answer"], response)
+                            if judge is not None
+                            else None
+                        )
+                        judge_latency = (
+                            time.perf_counter() - judge_started if judge is not None else 0.0
+                        )
+                        reward = score_search_reward(
+                            row,
+                            response,
+                            raw_final,
+                            reward_weights,
+                            judge_score,
+                        )
+                        rollout_records.append(
+                            (tuple(generator.segments), response, reward, judge_latency)
+                        )
                     rewards = [record[2].total for record in rollout_records]
                     advantages = group_advantages(rewards)
                     segment_count = sum(len(record[0]) for record in rollout_records)
@@ -397,7 +455,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                     policy.train()
                     optimizer.zero_grad(set_to_none=True)
                     mean_kl = 0.0
-                    for advantage, (segments, _response, _reward) in zip(
+                    for advantage, (segments, _response, _reward, _judge_latency) in zip(
                         advantages, rollout_records, strict=True
                     ):
                         for segment in segments:
@@ -435,6 +493,9 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                         "learning_rate": scheduler.get_last_lr()[0],
                         "rollouts": rollouts_seen,
                         "action_tokens": action_tokens_seen,
+                        "judge_latency_seconds": float(
+                            np.mean([rollout[3] for rollout in rollout_records])
+                        ),
                         **{f"reward/{name}": value for name, value in component_means.items()},
                     }
                     metrics.write(json.dumps(record) + "\n")
@@ -458,6 +519,8 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                 prompt_cursor = 0
     finally:
         asyncio.run(agent.aclose())
+        if judge is not None:
+            judge.close()
 
     final = config.output_directory / "final"
     save_checkpoint(

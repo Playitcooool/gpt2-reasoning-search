@@ -169,8 +169,8 @@ def test_one_h100_schedule_has_equal_proxies_and_24_hour_total() -> None:
     assert len({run.time_budget_hours for run in proxies}) == 1
     assert len({run.seed for run in proxies}) == 1
     assert len(main) == 1 and main[0].reasoning_ratio == 0.7
-    assert sum(run.time_budget_hours for run in schedule) == 21.0
-    assert sum(run.time_budget_hours for run in schedule) + 3.0 == 24.0
+    assert sum(run.time_budget_hours for run in schedule) == 18.5
+    assert sum(run.time_budget_hours for run in schedule) + 5.5 == 24.0
 
 
 def test_experiment_plan_and_report_writing_are_machine_readable(tmp_path: Path) -> None:
@@ -182,8 +182,8 @@ def test_experiment_plan_and_report_writing_are_machine_readable(tmp_path: Path)
     plan = json.loads(plan_path.read_text())
 
     assert plan["hardware"] == "single NVIDIA H100"
-    assert plan["total_scheduled_training_hours"] == 21.0
-    assert plan["reserved_sft_and_evaluation_hours"] == 3.0
+    assert plan["total_scheduled_training_hours"] == 18.5
+    assert plan["reserved_calibration_sft_rl_evaluation_hours"] == 5.5
     assert len(plan["runs"]) == 4
     assert "Do not claim" in plan["notes"][-1]
     assert report_path.read_text() == '{\n  "a": 1,\n  "z": 2\n}\n'

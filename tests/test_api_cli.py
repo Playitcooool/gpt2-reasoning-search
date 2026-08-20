@@ -80,6 +80,7 @@ def test_cli_help_lists_training_search_and_serving_commands() -> None:
         "make-trajectories",
         "sft-tools",
         "rl-search",
+        "rl-search",
         "ask",
         "serve",
         "experiment-plan",

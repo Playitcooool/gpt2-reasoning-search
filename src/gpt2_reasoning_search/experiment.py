@@ -18,13 +18,13 @@ class ScheduledRun:
 
 
 def one_h100_schedule() -> list[ScheduledRun]:
-    """Leave roughly three hours of a 24-hour window for SFT and evaluation."""
+    """Schedule the 18.5 hours assigned to proxy and main pretraining."""
     proxy_cap = 150_000_000
     return [
-        ScheduledRun("proxy-r0", "proxy-124m", 0.0, proxy_cap, 1.0),
-        ScheduledRun("proxy-r30", "proxy-124m", 0.3, proxy_cap, 1.0),
-        ScheduledRun("proxy-r70", "proxy-124m", 0.7, proxy_cap, 1.0),
-        ScheduledRun("main-r70", "main-350m", 0.7, 2_500_000_000, 18.0),
+        ScheduledRun("proxy-r0", "proxy-124m", 0.0, proxy_cap, 1.5),
+        ScheduledRun("proxy-r30", "proxy-124m", 0.3, proxy_cap, 1.5),
+        ScheduledRun("proxy-r70", "proxy-124m", 0.7, proxy_cap, 1.5),
+        ScheduledRun("main-r70", "main-350m", 0.7, 2_500_000_000, 14.0),
     ]
 
 
@@ -32,7 +32,7 @@ def write_experiment_plan(output: Path) -> None:
     plan = {
         "hardware": "single NVIDIA H100",
         "total_scheduled_training_hours": sum(run.time_budget_hours for run in one_h100_schedule()),
-        "reserved_sft_and_evaluation_hours": 3.0,
+        "reserved_calibration_sft_rl_evaluation_hours": 5.5,
         "runs": [asdict(run) for run in one_h100_schedule()],
         "notes": [
             "Each token cap is reduced after calibration when necessary to honor its time budget.",

@@ -785,7 +785,7 @@ http = [
 
 [[package]]
 name = "gpt2-reasoning-search"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },
@@ -799,6 +799,7 @@ dependencies = [
     { name = "tokenizers" },
     { name = "torch" },
     { name = "trafilatura" },
+    { name = "transformers" },
     { name = "typer" },
     { name = "usearch" },
     { name = "uvicorn" },
@@ -823,6 +824,7 @@ requires-dist = [
     { name = "tokenizers", specifier = ">=0.21.0" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "trafilatura", specifier = ">=2.0.0" },
+    { name = "transformers", specifier = ">=5.15.1" },
     { name = "typer", specifier = ">=0.16.0" },
     { name = "usearch", specifier = ">=2.16.9" },
     { name = "uvicorn", specifier = ">=0.35.0" },

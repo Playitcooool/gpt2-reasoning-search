@@ -59,7 +59,7 @@ def create_app(agent: SearchAgent | None = None) -> FastAPI:
 
     app = FastAPI(
         title="GPT-2 Reasoning Search",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
 

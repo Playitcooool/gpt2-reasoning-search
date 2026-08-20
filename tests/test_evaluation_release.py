@@ -346,7 +346,7 @@ def test_release_cli_exposes_new_commands_and_consistent_version(tmp_path: Path)
     assert "score-lm" in help_result.stdout
     assert "benchmark-grounded" in help_result.stdout
     assert version_result.exit_code == 0
-    assert version_result.stdout.strip() == "0.2.0"
+    assert version_result.stdout.strip() == "0.3.0"
     assert score_result.exit_code == 0
     assert json.loads(lm_output.read_text())["count_tokens"] == 2
 

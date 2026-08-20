@@ -20,3 +20,14 @@ Keep `BRAVE_SEARCH_API_KEY` in the environment or a secret manager. Never commit
 localhost unless an authenticated TLS reverse proxy protects it. Live-search responses can change
 and must not be used for reproducible benchmark numbers; use the frozen local Wikipedia index for
 reported experiments.
+
+Search RL must use the frozen local index and reviewed QA/reward data. Do not place secrets, private
+documents, or live-web results in the RL environment. Deterministic rewards can be exploited; inspect
+high-reward trajectories and require held-out answer, citation, tool-validity, and search-restraint
+gates before deployment.
+
+The optional Qwen reward judge adds another attack surface: retrieved text or candidate answers may
+try to instruct the judge, and a small judge can be biased, inconsistent, or reward superficial
+phrasing. Its inputs are quoted and capped, outputs are schema-validated, and its reward weight is
+bounded, but these controls do not eliminate prompt injection or reward hacking. Keep deterministic
+provenance checks authoritative and audit against human-rated and adversarial examples.

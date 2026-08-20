@@ -12,6 +12,8 @@ checkpoint hash, tokenizer hash, index manifest, seed, and whether search is loc
 - Logic: exact-solver subsets where deterministic validation exists.
 - Retrieval: frozen HotpotQA-style multi-hop questions and a small reasoning-intensive retrieval set.
 - Tools: held-out no-search, one-search, reformulation, empty-result, and malformed-call cases.
+- RL: matched tool-SFT versus RL checkpoints, including reward-component and KL curves, evaluated on
+  prompts excluded from RL training.
 
 Run grounded records with identical examples and decoding settings for `off` and `local`. Live web
 results are diagnostic only because they change over time. Report answer EM/F1, retrieval
@@ -42,3 +44,12 @@ reasoning-improvement claim.
 Tool acceptance requires at least 95% valid calls on held-out tool examples and citation validity of
 100%. Stable training, exact checkpoint resume, and auditable mixture counters are separate gates;
 good downstream scores do not excuse a failed gate.
+
+For RL acceptance, require non-zero within-group reward variance on a useful fraction of training
+prompts. Compare answer accuracy, citation validity, valid-call rate, and unnecessary-search rate
+against the tool-SFT checkpoint. Training reward alone is not an evaluation metric.
+
+When the auxiliary LLM judge is enabled, hand-rate a fixed sample for answer correctness, evidence
+support, and search quality. Report judge validity plus agreement/error against those ratings, and
+run the same seed and budget with `--no-llm-judge`. Never use the judge's own score as the only
+checkpoint-selection metric.

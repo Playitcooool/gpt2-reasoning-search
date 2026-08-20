@@ -22,8 +22,9 @@ Run `smoke-overfit` before spending the main budget. Keep the 0/30/70 proxy toke
 
 - Throughput calibration and smoke gates: 0.5 hour.
 - Three equal-budget 124M proxies: 4.5 hours total.
-- 350M 70% main pretraining: up to 16 hours.
+- 350M 70% main pretraining: up to 14 hours.
 - Tool SFT: 1.5 hours.
+- Search RL: 2 hours.
 - Held-out evaluation and buffer: 1.5 hours.
 
 The trainer measures steady-state throughput after compile warmup and reduces the main token cap to
@@ -50,7 +51,24 @@ or token budgets. Preserve failed or neutral results; do not relabel a shorter r
 
 ## Serving after training
 
-Build the index and run tool SFT, then start the service. Keep the API bound to localhost unless it
+Build the index, run tool SFT, then run grouped local-search RL:
+
+```bash
+uv run gpt2-reasoning-search rl-search \
+  --checkpoint checkpoints/tool-sft \
+  --tokenizer-path artifacts/tokenizer.json \
+  --prompts data/rl/search-qa.jsonl \
+  --index artifacts/wiki-index \
+  --output checkpoints/search-rl --group-size 4 \
+  --llm-judge --judge-device cuda
+```
+
+The default auxiliary judge is revision-pinned `Qwen/Qwen3.5-2B`, run greedily with a 4,096-token
+input cap. Its roughly 2B parameters are practical on an 80 GB H100 alongside the 350M policy and
+frozen reference when generation is sequential. Do not use the model's 262K maximum context here.
+
+Compare tool-SFT and RL checkpoints on the frozen held-out set before deploying the RL checkpoint.
+Then start the service. Keep the API bound to localhost unless it
 is behind authenticated TLS termination. Configure secrets through the host secret manager, not a
 repository file. The default single-request concurrency avoids unsafe simultaneous generation on
 one model instance; raise it only after memory and latency measurement.

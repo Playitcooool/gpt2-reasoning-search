@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from gpt2_reasoning_search.judge import JudgeScore
 from gpt2_reasoning_search.rl import (
     PolicyGenerator,
     RewardWeights,
@@ -55,6 +56,11 @@ def config(tmp_path: Path, **overrides: object) -> SearchRLConfig:
         {"grad_clip": 0},
         {"save_every_steps": 0},
         {"retrieval_device": "mps"},
+        {"judge_device": "mps"},
+        {"judge_max_input_tokens": 255},
+        {"judge_max_new_tokens": 15},
+        {"judge_model": "Qwen/Qwen3.5-2B", "judge_revision": None},
+        {"judge_model": "Qwen/Qwen3.5-2B", "judge_revision": "main"},
     ],
 )
 def test_search_rl_config_validation(tmp_path: Path, overrides: dict[str, object]) -> None:
@@ -85,6 +91,7 @@ def test_stream_rl_prompts_accepts_schema_and_skips_empty_lines(tmp_path: Path) 
         ('{"answer":"x"}\n', "missing question"),
         ('{"question":"q"}\n', "missing answer"),
         ('{"question":"q","answer":"a","supporting_ids":"bad"}\n', "supporting_ids"),
+        ('{"question":"q","answer":"a","search_required":"false"}\n', "search_required"),
     ],
 )
 def test_stream_rl_prompts_rejects_invalid_schema(
@@ -163,8 +170,39 @@ def test_search_reward_exact_f1_supported_valid_citation_and_search_cost() -> No
         "unnecessary_search": 0.0,
         "invalid_tool_call": 0.0,
         "search_cost": 1.0,
+        "judge_answer_correctness": 0.0,
+        "judge_evidence_support": 0.0,
+        "judge_search_quality": 0.0,
+        "judge_valid": 0.0,
     }
     assert scored.total == pytest.approx(1.93)
+
+
+def test_search_reward_adds_only_valid_auxiliary_judge_components() -> None:
+    row = {"answer": "Paris", "supporting_ids": [], "search_required": False}
+    base_response = response("Paris", [], 0)
+    valid = score_search_reward(
+        row,
+        base_response,
+        "<|answer|>Paris",
+        judge_score=JudgeScore(0.5, 0.25, 1.0, valid=True, reason="ok"),
+    )
+    invalid = score_search_reward(
+        row,
+        base_response,
+        "<|answer|>Paris",
+        judge_score=JudgeScore(1.0, 1.0, 1.0, valid=False, reason="bad schema"),
+    )
+
+    assert valid.components["judge_answer_correctness"] == 0.5
+    assert valid.components["judge_evidence_support"] == 0.25
+    assert valid.components["judge_search_quality"] == 1.0
+    assert valid.components["judge_valid"] == 1.0
+    assert valid.total - invalid.total == pytest.approx(0.5 * 0.20 + 0.25 * 0.15 + 0.05)
+    assert invalid.components["judge_answer_correctness"] == 0.0
+    assert invalid.components["judge_evidence_support"] == 0.0
+    assert invalid.components["judge_search_quality"] == 0.0
+    assert invalid.components["judge_valid"] == 0.0
 
 
 def test_search_reward_separates_support_from_validity_and_penalizes_behavior() -> None:
@@ -422,6 +460,7 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
 
     class FakeAgent:
         calls = 0
+        requests = []
 
         def __init__(self, generate, provider) -> None:
             self.generate = generate
@@ -430,11 +469,37 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
         async def answer(self, request) -> AnswerResponse:
             self.generate("prompt", 512)
             FakeAgent.calls += 1
+            FakeAgent.requests.append(request)
             answer = "yes" if FakeAgent.calls % 2 else "no"
             return response(answer, [], 0)
 
         async def aclose(self) -> None:
             self.provider.closed += 1
+
+    judges = []
+
+    class FakeJudge:
+        raise_score = False
+        raise_init = False
+
+        def __init__(self, model_name, revision, **kwargs) -> None:
+            if self.raise_init:
+                raise RuntimeError("judge load failed")
+            self.model_name = model_name
+            self.revision = revision
+            self.kwargs = kwargs
+            self.calls = []
+            self.closed = 0
+            judges.append(self)
+
+        def score(self, question, reference_answer, judged_response) -> JudgeScore:
+            self.calls.append((question, reference_answer, judged_response.answer))
+            if self.raise_score:
+                raise RuntimeError("judge failed")
+            return JudgeScore(0.5, 0.25, 1.0, valid=True, reason="mock")
+
+        def close(self) -> None:
+            self.closed += 1
 
     loaded_weights: list[tuple[Path, FakeRLModel]] = []
     loaded_resume: list[FakeRLModel] = []
@@ -445,6 +510,7 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
     monkeypatch.setattr(rl_module, "PolicyGenerator", FakePolicyGenerator)
     monkeypatch.setattr(rl_module, "LocalWikipediaSearchProvider", FakeProvider)
     monkeypatch.setattr(rl_module, "SearchAgent", FakeAgent)
+    monkeypatch.setattr(rl_module, "QwenRewardJudge", FakeJudge)
     monkeypatch.setattr(rl_module.Tokenizer, "from_file", lambda _path: object())
     monkeypatch.setattr(
         rl_module,
@@ -495,6 +561,11 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
         save_every_steps=2,
         resume_from=tmp_path / "resume",
         retrieval_device="cpu",
+        judge_model="Qwen/Qwen3.5-2B",
+        judge_revision="a" * 40,
+        judge_device="cpu",
+        judge_max_input_tokens=512,
+        judge_max_new_tokens=32,
     )
     final = train_search_rl(settings)
 
@@ -506,12 +577,31 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
     assert reference.training is False
     assert all(not parameter.requires_grad for parameter in reference.parameters())
     assert providers[0].kwargs["model_device"] == "cpu"
+    assert providers[0].kwargs["enable_reranker"] is False
     assert providers[0].closed == 1
+    assert len(judges) == 1
+    assert judges[0].model_name == "Qwen/Qwen3.5-2B"
+    assert judges[0].revision == "a" * 40
+    assert judges[0].kwargs == {
+        "device": "cpu",
+        "max_input_tokens": 512,
+        "max_new_tokens": 32,
+    }
+    assert len(judges[0].calls) == 6
+    assert judges[0].closed == 1
+    assert FakeAgent.requests
+    assert all(request.search_mode == "local" for request in FakeAgent.requests)
+    assert all(request.max_searches == settings.max_searches for request in FakeAgent.requests)
     metrics_text = (tmp_path / "output" / "metrics.jsonl").read_text()
     records = [json.loads(line) for line in metrics_text.splitlines()]
     assert [record["step"] for record in records] == [6, 7, 8]
     assert records[-1]["rollouts"] == 16
     assert records[-1]["action_tokens"] == 26
+    assert records[-1]["reward/judge_answer_correctness"] == pytest.approx(0.5)
+    assert records[-1]["reward/judge_evidence_support"] == pytest.approx(0.25)
+    assert records[-1]["reward/judge_search_quality"] == pytest.approx(1.0)
+    assert records[-1]["reward/judge_valid"] == pytest.approx(1.0)
+    assert records[-1]["judge_latency_seconds"] >= 0.0
     assert saves[-1][0] == final
     assert saves[-1][1:4] == (
         8,
@@ -519,3 +609,44 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
         {"epoch": 2, "prompt_cursor": 0, "rollouts": 16, "total_action_tokens": 26},
     )
     assert saves[-1][4]["model"]["gradient_checkpointing"] is True
+    search_rl_config = saves[-1][4]["search_rl"]
+    assert search_rl_config["judge_model"] == "Qwen/Qwen3.5-2B"
+    assert search_rl_config["judge_revision"] == "a" * 40
+    assert search_rl_config["judge_device"] == "cpu"
+    assert search_rl_config["reward_weights"]["judge_answer_correctness"] == 0.20
+
+    # Judge inference errors abort the update instead of silently changing the
+    # reward distribution, while still closing both judge and search resources.
+    FakeJudge.raise_score = True
+    failing = config(
+        tmp_path,
+        checkpoint_directory=checkpoint,
+        prompts_path=prompts,
+        output_directory=tmp_path / "failing-output",
+        epochs=1,
+        group_size=2,
+        judge_model="Qwen/Qwen3.5-2B",
+        judge_revision="a" * 40,
+        judge_device="cpu",
+    )
+    with pytest.raises(RuntimeError, match="judge failed"):
+        train_search_rl(failing)
+    assert providers[-1].closed == 1
+    assert judges[-1].closed == 1
+
+    FakeJudge.raise_score = False
+    FakeJudge.raise_init = True
+    load_failing = config(
+        tmp_path,
+        checkpoint_directory=checkpoint,
+        prompts_path=prompts,
+        output_directory=tmp_path / "load-failing-output",
+        epochs=1,
+        group_size=2,
+        judge_model="Qwen/Qwen3.5-2B",
+        judge_revision="a" * 40,
+        judge_device="cpu",
+    )
+    with pytest.raises(RuntimeError, match="judge load failed"):
+        train_search_rl(load_failing)
+    assert providers[-1].closed == 1

@@ -2,10 +2,11 @@
 
 An English research prototype for training a modernized GPT-2-style decoder from random
 initialization, with a deliberately unusual **70% verified-reasoning / 30% educational-text**
-pretraining mixture, followed by supervised search-tool training.
+pretraining mixture, followed by supervised and reinforcement-learned search-tool training.
 
 The repository contains reproducible data preparation, tokenizer, model, pretraining, hybrid
-Wikipedia retrieval, optional Brave web search, tool SFT, evaluation, CLI, and FastAPI serving.
+Wikipedia retrieval, optional Brave web search, tool SFT, online search RL, evaluation, CLI, and
+FastAPI serving.
 Downloaded data and trained weights are not included. A 350M model trained for one H100-day should
 be treated as a narrow experiment, not a production-grade general assistant.
 
@@ -58,7 +59,8 @@ uv run gpt2-reasoning-search pretrain \
   --reasoning-tokens data/processed/reasoning.bin \
   --general-tokens data/processed/general.bin \
   --output checkpoints/main-350m \
-  --preset main-350m --reasoning-ratio 0.70 --max-tokens 2500000000
+  --preset main-350m --reasoning-ratio 0.70 --max-tokens 2500000000 \
+  --time-budget-hours 14
 ```
 
 Each `.bin` has a manifest containing dtype, token count, hashes, source counts, verification counts,
@@ -94,6 +96,15 @@ uv run gpt2-reasoning-search sft-tools \
   --tokenizer-path artifacts/tokenizer.json \
   --trajectories data/processed/tool-trajectories.jsonl \
   --output checkpoints/tool-sft
+
+# Optimize answer, citation, and search behavior against the frozen local index.
+uv run gpt2-reasoning-search rl-search \
+  --checkpoint checkpoints/tool-sft \
+  --tokenizer-path artifacts/tokenizer.json \
+  --prompts data/rl/search-qa.jsonl \
+  --index artifacts/wiki-index \
+  --output checkpoints/search-rl \
+  --llm-judge --judge-device cuda
 ```
 
 Trajectory rows may use the simple `query` + `evidence` form, omit `query` for no-search examples,
@@ -101,11 +112,18 @@ or provide `searches`, an array of up to three `{query, evidence}` objects for m
 reformulation. Retrieved observations and prompts are masked from loss; tool calls, generated
 reasoning, answers, and citations are trained.
 
+Search RL is a distinct third stage. It samples groups of online tool trajectories, scores
+verifiable QA outcomes and grounded tool behavior, optimizes only model-generated action tokens,
+and regularizes against a frozen copy of the tool-SFT checkpoint. RL uses local search only; its
+tokens do not alter the audited 70/30 pretraining ratio. See [search RL](docs/SEARCH_RL.md).
+The CLI also uses a revision-pinned Qwen3.5-2B auxiliary judge by default. Deterministic answer,
+citation, and tool checks remain the primary reward; use `--no-llm-judge` for the ablation.
+
 ## Serving
 
 ```bash
 uv run gpt2-reasoning-search serve \
-  --checkpoint checkpoints/tool-sft \
+  --checkpoint checkpoints/search-rl/final \
   --tokenizer-path artifacts/tokenizer.json \
   --index artifacts/wiki-index
 ```
@@ -135,4 +153,5 @@ uv run gpt2-reasoning-search score-grounded artifacts/grounded-predictions.jsonl
 Reports include answer EM/F1, retrieval Recall/MRR/nDCG, citation precision/recall/validity, valid
 tool-call rate, unnecessary-search and query-recovery rates, latency percentiles, and per-mode
 search-off/search-on comparisons. See [evaluation protocol](docs/EVALUATION.md),
-[data provenance](docs/DATA.md), [architecture](docs/ARCHITECTURE.md), and [security](SECURITY.md).
+[data provenance](docs/DATA.md), [architecture](docs/ARCHITECTURE.md),
+[search RL](docs/SEARCH_RL.md), and [security](SECURITY.md).
