@@ -41,4 +41,4 @@ echo
 echo "Setup complete. Next:"
 echo "  1. Edit config/ssh.env (put TRAIN_CACHE on fast scratch storage)."
 echo "  2. Run ./train-ssh doctor"
-echo "  3. Run ./train-ssh prepare, then ./train-ssh all"
+echo "  3. Run ./train-ssh prepare, then submit scripts/slurm/submit_8h_pipeline.sh"

@@ -156,10 +156,10 @@ def test_slurm_template_documentation_commands_and_outputs_are_accurate() -> Non
     guide = (ROOT / "docs" / "SSH_TRAINING.md").read_text()
     combined = readme + guide
 
-    assert "`sbatch scripts/slurm/train_h100.sbatch all`" in readme
+    assert "`scripts/slurm/submit_8h_pipeline.sh`" in readme
     for command in (
         "chmod +x scripts/slurm/train_h100.sbatch",
-        "sbatch scripts/slurm/train_h100.sbatch all",
+        "scripts/slurm/submit_8h_pipeline.sh",
         "sbatch scripts/slurm/train_h100.sbatch pretrain",
     ):
         assert command in guide

@@ -39,16 +39,18 @@ ablations and uses a shortened main run:
 - preparation: before the GPU reservation, on a networked login/preprocessing node;
 - smoke gate: a few minutes;
 - 350M 70% main pretraining: 4.5 hours, 750M-token cap;
-- tool SFT, search RL, and buffer: the remaining time.
+- tool SFT: one separate eight-hour reservation;
+- search RL: one separate eight-hour reservation (with the Qwen judge enabled by default).
 
 Prepare the artifacts first, then submit the batch job:
 
 ```bash
 ./train-ssh prepare
-sbatch scripts/slurm/train_h100.sbatch all
+scripts/slurm/submit_8h_pipeline.sh
 ```
 
-This cannot support the original three-proxy comparison. Run
+This submits independent eight-hour pretrain, SFT, and RL jobs with `afterok` dependencies. It cannot
+support the original three-proxy comparison. Run
 `sbatch scripts/slurm/train_h100.sbatch proxies` in a separate reservation if those controls are
 required. Re-submit any interrupted stage; complete checkpoints resume automatically.
 

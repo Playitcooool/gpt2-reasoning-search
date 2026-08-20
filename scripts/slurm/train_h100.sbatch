@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Submit from the repository root:
-#   sbatch scripts/slurm/train_h100.sbatch all
-# Or resume one stage:
+# Submit one stage from the repository root (each job has its own 8-hour limit):
+#   sbatch scripts/slurm/train_h100.sbatch pretrain
+# Or submit the dependent pretrain -> SFT -> RL pipeline:
+#   scripts/slurm/submit_8h_pipeline.sh
+# To resume one stage:
 #   sbatch scripts/slurm/train_h100.sbatch pretrain
 
 #SBATCH --job-name=grs-train
@@ -20,7 +22,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STAGE="${1:-all}"
+STAGE="${1:-pretrain}"
 CONFIG_FILE="${SSH_TRAIN_CONFIG:-$PROJECT_ROOT/config/ssh.env}"
 
 [[ -f "$CONFIG_FILE" ]] || {

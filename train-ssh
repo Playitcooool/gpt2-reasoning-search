@@ -17,7 +17,7 @@ Easy SSH/H100 training
   ./train-ssh pretrain              Train or auto-resume the 350M base model
   ./train-ssh sft                   Train or auto-resume search-tool SFT
   ./train-ssh rl                    Train or auto-resume search RL with Qwen judge
-  ./train-ssh all                   Run the eight-hour smoke, main, SFT, and RL profile
+  ./train-ssh all                   Run a combined custom profile (blocked by default for 8h)
   ./train-ssh foreground STAGE      Run a stage in the current terminal
   ./train-ssh slurm STAGE           Submit a stage through sbatch
   ./train-ssh status                Show jobs, GPU state, checkpoints, and recent metrics
@@ -49,6 +49,12 @@ load_config() {
 launch() {
   local stage="$1"
   load_config
+  if [[ "$stage" == "all" && "${TRAIN_PROFILE:-8h}" == "8h" \
+    && "${ALLOW_COMBINED_JOB:-0}" != "1" ]]; then
+    echo "The 8-hour profile requires separate pretrain, sft, and rl stages." >&2
+    echo "Use scripts/slurm/submit_8h_pipeline.sh for dependent Slurm jobs." >&2
+    exit 2
+  fi
   mkdir -p "$PROJECT_ROOT/logs"
   local session="${SESSION_PREFIX:-grs}-$stage"
   if command -v tmux >/dev/null 2>&1; then
@@ -75,6 +81,12 @@ launch() {
 submit_slurm() {
   local stage="$1"
   load_config
+  if [[ "$stage" == "all" && "${TRAIN_PROFILE:-8h}" == "8h" \
+    && "${ALLOW_COMBINED_JOB:-0}" != "1" ]]; then
+    echo "The 8-hour profile requires separate pretrain, sft, and rl stages." >&2
+    echo "Use scripts/slurm/submit_8h_pipeline.sh for dependent Slurm jobs." >&2
+    exit 2
+  fi
   command -v sbatch >/dev/null 2>&1 || {
     echo "sbatch is not available on this server." >&2
     exit 2

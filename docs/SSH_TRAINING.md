@@ -18,24 +18,24 @@ paths. Then:
 ```bash
 ./train-ssh doctor
 ./train-ssh prepare       # do this before reserving the GPU when possible
-./train-ssh all
+./train-ssh pretrain      # wait for completion, then run SFT and RL
 ```
 
 The default profile is sized for an eight-hour GPU reservation. Prepare artifacts before reserving
-the GPU when possible; `all` then runs smoke, the 350M main run, tool SFT, and search RL. It skips
-proxy ablations by default because they cannot fit in eight hours. The job survives an SSH
-disconnect. Follow progress from a new login:
+the GPU when possible; run `pretrain`, then `sft`, then `rl` as each stage completes. It skips proxy
+ablations by default because they cannot fit in eight hours. Each stage survives an SSH disconnect.
+Follow progress from a new login:
 
 ```bash
 cd gpt2-reasoning-search
 ./train-ssh status
-./train-ssh logs all
+./train-ssh logs pretrain
 # Or interact with the tmux job:
-./train-ssh attach all
+./train-ssh attach pretrain
 ```
 
-Detach from tmux with `Ctrl-b`, then `d`. Re-running `./train-ssh all` or an individual stage skips
-completed outputs and resumes the newest complete `step-*` checkpoint.
+Detach from tmux with `Ctrl-b`, then `d`. Re-running an individual stage skips completed outputs and
+resumes the newest complete `step-*` checkpoint.
 
 ## Required input files
 
@@ -47,8 +47,8 @@ Before `prepare`, provide:
 - `data/rl/search-qa.jsonl` for search RL;
 - preferably `data/evaluation/contamination-prompts.jsonl` before corpus filtering.
 
-The pinned reasoning and FineWeb-Edu datasets stream from Hugging Face during `prepare` (or the
-preparation phase at the start of `all`). If compute
+The pinned reasoning and FineWeb-Edu datasets stream from Hugging Face during `prepare` (or an
+explicit `PREPARE_IN_JOB=1` custom profile). If compute
 nodes cannot access the internet, run `prepare` on a networked login/preprocessing node or copy the
 resulting tokenizer, `.bin` corpora, and Wikipedia index to the paths in `config/ssh.env`.
 
@@ -67,10 +67,10 @@ This is safer when the school gives several shorter reservations:
 ./train-ssh rl
 ```
 
-The eight-hour profile allocates about 4.5 hours and a 750M-token cap to the 350M main run, leaving
-time for SFT, RL, and overhead. This is a shortened experiment, not the original 2.5B-token run.
-The proxy comparison remains available with `./train-ssh proxies` but requires a separate
-reservation.
+The eight-hour profile allocates about 4.5 hours and a 750M-token cap to the 350M main run. SFT and
+RL are separate stages, each submitted in its own eight-hour reservation. This is a shortened
+experiment, not the original 2.5B-token run. The proxy comparison remains available with
+`./train-ssh proxies` but requires a separate reservation.
 
 The profile is selected by `TRAIN_PROFILE="8h"` in `config/ssh.env`. Existing config files are
 automatically treated as `8h` after upgrading; set `TRAIN_PROFILE="custom"` if you deliberately
@@ -89,7 +89,7 @@ Ask the administrator for the correct partition, account, memory, and GPU resour
 the `SLURM_*` values in `config/ssh.env`:
 
 ```bash
-./train-ssh slurm all
+scripts/slurm/submit_8h_pipeline.sh
 squeue -u "$USER"
 ./train-ssh status
 ```
@@ -100,16 +100,18 @@ accepts the job and cannot be read later from `config/ssh.env`.
 
 ```bash
 chmod +x scripts/slurm/train_h100.sbatch
-sbatch scripts/slurm/train_h100.sbatch all
-# After a time limit or interruption, submit the same stage again:
+# Submit all GPU stages as separate dependent jobs:
+scripts/slurm/submit_8h_pipeline.sh
+# Or submit/retry one stage:
 sbatch scripts/slurm/train_h100.sbatch pretrain
 ```
 
 The script writes Slurm stdout/stderr to `logs/slurm-<job-name>-<job-id>.*` and runs the same safe,
-auto-resuming worker as `train-ssh`.
+auto-resuming worker as `train-ssh`. Each stage gets a separate eight-hour allocation. The combined
+`all` stage is blocked by the default 8-hour profile so it cannot accidentally exceed the reservation.
 
-If the eight-hour job limit is shorter than a stage, submit stages separately. A timed-out stage can
-be submitted again and will resume its newest complete checkpoint.
+If a stage reaches its eight-hour limit, submit that stage again. It will resume its newest complete
+checkpoint; dependent jobs should be held until the retried stage succeeds.
 
 ## Useful commands
 

@@ -62,6 +62,8 @@ def _write_config(project: Path, tmp_path: Path, **overrides: object) -> Path:
         "REASONING_TOKEN_CAP": 100,
         "GENERAL_TOKEN_CAP": 100,
         "LEXICAL_ONLY": 1,
+        "TRAIN_PROFILE": "8h",
+        "ALLOW_COMBINED_JOB": 0,
         "PREPARE_IN_JOB": 0,
         "RUN_SMOKE": 1,
         "RUN_PROXIES": 0,
@@ -330,7 +332,7 @@ def test_slurm_submission_uses_configured_resources_and_validated_stage(tmp_path
     _fake_recorder(fake_bin / "sbatch", "sbatch", stdout="Submitted batch job 42")
 
     result = _run(
-        [project / "train-ssh", "slurm", "all"],
+        [project / "train-ssh", "slurm", "pretrain"],
         project=project,
         config=config,
         path=str(fake_bin),
@@ -347,7 +349,7 @@ def test_slurm_submission_uses_configured_resources_and_validated_stage(tmp_path
     assert result.returncode == 0
     log = calls.read_text()
     for argument in (
-        "--job-name=school-grs-all",
+        "--job-name=school-grs-pretrain",
         "--gres=gpu:h100:1",
         "--cpus-per-task=8",
         "--mem=64G",
@@ -357,9 +359,54 @@ def test_slurm_submission_uses_configured_resources_and_validated_stage(tmp_path
     ):
         assert f"ARG <{argument}>" in log
     assert f"ARG <--export=ALL,SSH_TRAIN_CONFIG={config}>" in log
-    assert "ARG <all>" in log
+    assert "ARG <pretrain>" in log
     assert invalid.returncode == 2
     assert "Choose:" in invalid.stderr
+
+
+@pytest.mark.parametrize("command", [["all"], ["slurm", "all"]])
+def test_default_eight_hour_launcher_rejects_combined_all_without_starting_job(
+    tmp_path: Path, command: list[str]
+) -> None:
+    project = _copy_workflow(tmp_path)
+    config = _write_config(project, tmp_path)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir")
+    _fake_recorder(fake_bin / "tmux", "tmux")
+    _fake_recorder(fake_bin / "sbatch", "sbatch")
+
+    result = _run(
+        [project / "train-ssh", *command],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert result.returncode == 2
+    assert "requires separate pretrain, sft, and rl stages" in result.stderr
+    assert "submit_8h_pipeline.sh" in result.stderr
+    assert not calls.exists()
+
+
+def test_default_eight_hour_worker_rejects_combined_all_before_gpu_work(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    config = _write_config(project, tmp_path)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    result = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "all"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert result.returncode == 2
+    assert "does not run multiple GPU stages in one job" in result.stdout + result.stderr
+    assert not calls.exists()
 
 
 @pytest.mark.parametrize("command", ["logs", "attach"])
@@ -478,9 +525,9 @@ def test_completed_downstream_stage_skips_missing_inputs_and_uv(tmp_path: Path, 
     assert not calls.exists()
 
 
-def test_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_path: Path) -> None:
+def test_custom_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_path: Path) -> None:
     project = _copy_workflow(tmp_path)
-    config = _write_config(project, tmp_path, PREPARE_IN_JOB=0)
+    config = _write_config(project, tmp_path, PREPARE_IN_JOB=0, ALLOW_COMBINED_JOB=1)
     calls = tmp_path / "calls.log"
     fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
     _fake_recorder(fake_bin / "uv", "uv")
@@ -506,6 +553,7 @@ def test_all_honors_disabled_stage_gates_and_optional_proxy_gate(tmp_path: Path)
     fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
     _fake_recorder(fake_bin / "uv", "uv")
     disabled = {
+        "ALLOW_COMBINED_JOB": 1,
         "PREPARE_IN_JOB": 0,
         "RUN_SMOKE": 0,
         "RUN_PROXIES": 0,
@@ -553,6 +601,7 @@ def test_all_can_opt_into_preparation_inside_the_job(tmp_path: Path) -> None:
         project,
         tmp_path,
         PREPARE_IN_JOB=1,
+        ALLOW_COMBINED_JOB=1,
         RUN_SMOKE=0,
         RUN_PROXIES=0,
         RUN_PRETRAIN=0,
@@ -580,6 +629,8 @@ def test_default_cluster_config_and_docs_describe_eight_hour_profile() -> None:
 
     for setting in (
         "PREPARE_IN_JOB=0",
+        'TRAIN_PROFILE="8h"',
+        "ALLOW_COMBINED_JOB=0",
         "RUN_SMOKE=1",
         "RUN_PROXIES=0",
         "RUN_PRETRAIN=1",
@@ -631,14 +682,13 @@ def test_config_is_ignored_and_documented_commands_match_launcher() -> None:
         "pretrain",
         "sft",
         "rl",
-        "all",
         "status",
         "logs",
         "attach",
         "foreground",
-        "slurm",
     ):
         assert f"./train-ssh {command}" in guide + readme
         assert command in launcher
+    assert "combined `all` stage is blocked" in " ".join(guide.split())
+    assert "all" in launcher and "slurm" in launcher
     assert "./train-ssh logs prepare" in guide
-    assert "./train-ssh all" in guide

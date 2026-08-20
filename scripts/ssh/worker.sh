@@ -268,6 +268,11 @@ case "$STAGE" in
   sft) run_sft ;;
   rl) run_rl ;;
   all)
+    if [[ "${TRAIN_PROFILE:-8h}" == "8h" && "${ALLOW_COMBINED_JOB:-0}" != "1" ]]; then
+      echo "The 8-hour profile does not run multiple GPU stages in one job." >&2
+      echo "Submit scripts/slurm/submit_8h_pipeline.sh, or set ALLOW_COMBINED_JOB=1 for a custom reservation." >&2
+      exit 2
+    fi
     if [[ "${PREPARE_IN_JOB:-0}" == "1" ]]; then run_prepare; else require_prepared; fi
     if [[ "${RUN_SMOKE:-1}" == "1" ]]; then run_smoke; fi
     if [[ "${RUN_PROXIES:-0}" == "1" ]]; then run_proxies; fi

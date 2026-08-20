@@ -41,16 +41,15 @@ For a remote H100, the shortest path is:
 # Edit config/ssh.env, especially TRAIN_CACHE and input paths.
 ./train-ssh doctor
 ./train-ssh prepare
-./train-ssh all
+./train-ssh pretrain
 ./train-ssh status
 ```
 
 The default profile is sized for an eight-hour GPU reservation: prepare large artifacts before the
-GPU job when possible, then run smoke, the shortened main run, SFT, and RL. Proxy ablations are
+GPU job when possible, then run pretrain, SFT, and RL as separate stages. Proxy ablations are
 disabled by default. Long stages survive disconnects through tmux or nohup, automatically resume
 complete checkpoints, and can also be submitted with
-`./train-ssh slurm all` or the editable
-`sbatch scripts/slurm/train_h100.sbatch all`. See the
+`scripts/slurm/submit_8h_pipeline.sh` (pretrain → SFT → RL as dependent jobs). See the
 [SSH training guide](docs/SSH_TRAINING.md).
 
 ## Training pipeline
