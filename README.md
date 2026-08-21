@@ -38,8 +38,10 @@ For a remote H100, the shortest path is:
 
 ```bash
 ./train-ssh setup
-# Edit config/ssh.env, especially TRAIN_CACHE and input paths.
+# Edit only SLURM_ACCOUNT, SLURM_TIME, and (if required) SLURM_PARTITION/SLURM_GRES.
+# Cache and data paths are automatic.
 ./train-ssh doctor
+# This creates all data and retrieval inputs automatically at the fixed paths.
 ./train-ssh prepare
 ./train-ssh pretrain
 ./train-ssh status
@@ -50,7 +52,8 @@ GPU job when possible, then run pretrain, SFT, and RL as separate stages. Proxy 
 disabled by default. Each stage trains for about 7.5 hours, leaving a short startup/checkpoint
 margin; the main run can consume up to 2.5B tokens. Long stages survive disconnects through tmux or
 nohup, automatically resume complete checkpoints, and can also be submitted with
-`scripts/slurm/submit_8h_pipeline.sh` (pretrain → SFT → RL as dependent jobs). See the
+`scripts/slurm/submit_8h_pipeline.sh`; that wrapper prepares data first and submits pretrain → SFT →
+RL as dependent jobs. See the
 [SSH training guide](docs/SSH_TRAINING.md).
 
 ## Training pipeline
@@ -58,7 +61,11 @@ nohup, automatically resume complete checkpoints, and can also be submitted with
 Preprocessing is intentionally separate from the timed H100 window.
 
 ```bash
-# Train the 50K BPE tokenizer from representative reasoning and education samples.
+# The SSH workflow runs this automatically; it creates tokenizer samples, Wikipedia JSONL,
+# grounded questions, and search-RL prompts at the fixed data paths.
+uv run gpt2-reasoning-search bootstrap-data
+
+# Train the 50K BPE tokenizer from the generated reasoning and education samples.
 uv run gpt2-reasoning-search train-tokenizer data/tokenizer-sample/*.txt \
   --output artifacts/tokenizer.json --vocab-size 50304
 
@@ -81,7 +88,7 @@ uv run gpt2-reasoning-search pretrain \
   --general-tokens data/processed/general.bin \
   --output checkpoints/main-350m \
   --preset main-350m --reasoning-ratio 0.70 --max-tokens 2500000000 \
-  --time-budget-hours 14
+  --time-budget-hours 7.5
 ```
 
 Each `.bin` has a manifest containing dtype, token count, hashes, source counts, verification counts,

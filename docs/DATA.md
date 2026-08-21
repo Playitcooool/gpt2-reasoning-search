@@ -5,6 +5,13 @@ training role and advertised license. Before any public or commercial release, r
 cards and source-level restrictions again; a dataset-level label is not a substitute for legal
 review.
 
+The SSH workflow runs `bootstrap-data` automatically before tokenization. It creates fixed local
+paths, samples the pinned English `wikimedia/wikipedia` `20231101.en` snapshot at revision
+`b04c8d1ceb2f5cd4588862100d08de323dccfbaa`, and records the snapshot hash, license, and generated
+input paths in `artifacts/auto-data-manifest.json`. It also derives starter grounded questions,
+no-search examples, and search-RL prompts from those articles. These generated examples are a
+convenience bootstrap corpus; replace them with reviewed task data for a serious evaluation.
+
 The reasoning stream uses the pinned `allenai/big-reasoning-traces` configuration and accepts only
 the manifest's OpenR1/OpenThoughts source allowlist. Rows must pass structural checks and retain
 source and verifier metadata. OpenR1 rows retain their upstream Math Verify/judge provenance. When

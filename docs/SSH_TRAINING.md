@@ -12,8 +12,8 @@ cd gpt2-reasoning-search
 ./train-ssh setup
 ```
 
-Edit `config/ssh.env`. At minimum, put `TRAIN_CACHE` on fast scratch storage and confirm the input
-paths. Then:
+Edit `config/ssh.env` only for school Slurm resources (`SLURM_ACCOUNT`, `SLURM_TIME`, and, if needed,
+`SLURM_PARTITION`/`SLURM_GRES`). Cache and data paths are selected automatically. Then:
 
 ```bash
 ./train-ssh doctor
@@ -37,20 +37,16 @@ cd gpt2-reasoning-search
 Detach from tmux with `Ctrl-b`, then `d`. Re-running an individual stage skips completed outputs and
 resumes the newest complete `step-*` checkpoint.
 
-## Required input files
+## Automatic data preparation
 
-Before `prepare`, provide:
+`./train-ssh prepare` creates the fixed tokenizer samples, downloads the pinned reasoning and
+FineWeb-Edu streams, downloads a pinned English Wikipedia snapshot sample, generates grounded
+questions and search-RL prompts, builds the local index, and creates tool trajectories. It records
+the Wikipedia revision and generated-input SHA-256 hashes in `artifacts/auto-data-manifest.json`.
 
-- representative tokenizer text files under `data/tokenizer-sample/`;
-- `data/raw/wikipedia.jsonl` with `id`, `title`, `url`, and `text` fields;
-- `data/raw/grounded-questions.jsonl` for tool-SFT trajectories;
-- `data/rl/search-qa.jsonl` for search RL;
-- preferably `data/evaluation/contamination-prompts.jsonl` before corpus filtering.
-
-The pinned reasoning and FineWeb-Edu datasets stream from Hugging Face during `prepare` (or an
-explicit `PREPARE_IN_JOB=1` custom profile). If compute
-nodes cannot access the internet, run `prepare` on a networked login/preprocessing node or copy the
-resulting tokenizer, `.bin` corpora, and Wikipedia index to the paths in `config/ssh.env`.
+Run it on a networked login/preprocessing node before reserving the GPU. If compute nodes cannot
+access the internet, copy the resulting `artifacts/`, `data/raw/`, `data/processed/`, and
+`artifacts/wiki-index/` directories with hash-preserving tooling; no path edits are required.
 
 Because `prepare` launches in the background, wait for `./train-ssh logs prepare` to report
 completion before launching another stage. A process lock prevents two preparation/training stages
@@ -94,6 +90,10 @@ scripts/slurm/submit_8h_pipeline.sh
 squeue -u "$USER"
 ./train-ssh status
 ```
+
+The pipeline wrapper runs the same idempotent `prepare` stage before submitting any GPU job, so a
+fresh checkout does not require manual data-path setup. If preparation is already complete, it
+returns quickly and reuses the existing artifacts.
 
 If you prefer a normal editable `sbatch` file, use the included template. Edit its `#SBATCH` lines
 for your partition/account before submitting; these scheduler directives must be present when Slurm

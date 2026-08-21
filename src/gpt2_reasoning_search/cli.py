@@ -9,6 +9,7 @@ import typer
 
 from .agent import SearchAgent
 from .api import create_app
+from .bootstrap import bootstrap_local_inputs
 from .config import ModelConfig, TrainConfig
 from .evaluation import (
     compare_proxy_runs,
@@ -73,6 +74,17 @@ def tokenizer_command(
     """Train the project BPE tokenizer from text files."""
     train_tokenizer(inputs, output, vocab_size)
     typer.echo(str(output))
+
+
+@app.command("bootstrap-data")
+def bootstrap_data_command(
+    data_root: Path = typer.Option(Path("data")),
+    manifest_output: Path = typer.Option(Path("artifacts/auto-data-manifest.json")),
+    wikipedia_articles: int = typer.Option(5_000, min=1),
+) -> None:
+    """Download pinned public sources and create the fixed local training inputs."""
+    report = bootstrap_local_inputs(data_root, manifest_output, wikipedia_articles)
+    typer.echo(json.dumps(report, indent=2))
 
 
 @app.command("prepare-data")

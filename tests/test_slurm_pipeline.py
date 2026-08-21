@@ -16,12 +16,17 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def _copy_project(tmp_path: Path) -> tuple[Path, Path]:
+def _copy_project(tmp_path: Path, *, worker_exit: int = 0) -> tuple[Path, Path]:
     project = tmp_path / "school project"
     (project / "scripts" / "slurm").mkdir(parents=True)
+    (project / "scripts" / "ssh").mkdir()
     (project / "config").mkdir()
     shutil.copy2(SUBMITTER, project / "scripts" / "slurm" / SUBMITTER.name)
     shutil.copy2(BATCH, project / "scripts" / "slurm" / BATCH.name)
+    _write_executable(
+        project / "scripts" / "ssh" / "worker.sh",
+        f'{{ echo WORKER; printf "ARG <%s>\\n" "$@"; }} >> "$FAKE_CALLS"\nexit {worker_exit}\n',
+    )
     config = project / "config" / "ssh.env"
     config.touch()
     return project, config
@@ -108,6 +113,10 @@ def test_pipeline_submits_three_independent_eight_hour_jobs_with_afterok_depende
     assert result.returncode == 0, result.stderr
     groups = calls.read_text().split("CALL\n")[1:]
     assert len(groups) == 3
+    assert calls.read_text().split("CALL\n")[0].splitlines() == [
+        "WORKER",
+        "ARG <prepare>",
+    ]
     batch = project / "scripts" / "slurm" / BATCH.name
     assert all("ARG <--parsable>" in group for group in groups)
     assert all(f"ARG <--export=ALL,SSH_TRAIN_CONFIG={config}>" in group for group in groups)
@@ -179,6 +188,29 @@ def test_pipeline_checks_config_and_scheduler_before_submission(tmp_path: Path) 
     assert missing_scheduler.returncode == 2
     assert "sbatch is not available" in missing_scheduler.stderr
     assert not calls.exists()
+
+
+def test_pipeline_prepare_failure_prevents_any_slurm_submission(tmp_path: Path) -> None:
+    project, config = _copy_project(tmp_path, worker_exit=75)
+    calls = tmp_path / "calls.log"
+    counter = tmp_path / "counter"
+    fake_bin = _fake_path(
+        tmp_path,
+        'echo called >> "$FAKE_CALLS"\necho 999\n',
+    )
+
+    result = _run_submitter(
+        project / "scripts" / "slurm" / SUBMITTER.name,
+        project=project,
+        config=config,
+        fake_bin=fake_bin,
+        calls=calls,
+        counter=counter,
+    )
+
+    assert result.returncode == 75
+    assert calls.read_text().splitlines() == ["WORKER", "ARG <prepare>"]
+    assert "called" not in calls.read_text()
 
 
 def test_pipeline_docs_use_direct_submitter_and_never_submit_combined_all() -> None:

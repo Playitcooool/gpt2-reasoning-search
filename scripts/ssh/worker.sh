@@ -132,6 +132,9 @@ run_doctor() {
 }
 
 run_prepare() {
+  uv run --locked gpt2-reasoning-search bootstrap-data \
+    --data-root "$PROJECT_ROOT/data" \
+    --manifest-output "$PROJECT_ROOT/artifacts/auto-data-manifest.json"
   if [[ ! -f "$TOKENIZER_PATH" ]]; then
     local tokenizer_inputs=()
     while IFS= read -r tokenizer_input; do

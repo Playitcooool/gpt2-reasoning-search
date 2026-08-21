@@ -29,6 +29,9 @@ artifacts/
 checkpoints/
 data/raw/
 data/processed/
+data/tokenizer-sample/
+data/rl/
+data/evaluation/
 logs/
 wandb/
 config/ssh.env
