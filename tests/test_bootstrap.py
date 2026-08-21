@@ -8,6 +8,7 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from gpt2_reasoning_search import bootstrap as bootstrap_module
@@ -156,6 +157,36 @@ def test_bootstrap_cli_forwards_fixed_paths_and_prints_manifest(
     }
 
 
+def test_bootstrap_manifest_replacement_failure_preserves_previous_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    (data_root / "tokenizer-sample").mkdir(parents=True)
+    (data_root / "tokenizer-sample" / "sample.txt").write_text("sample\n")
+    article = _article_row("1", "Alpha Topic")
+    raw = data_root / "raw"
+    raw.mkdir()
+    (raw / "wikipedia.jsonl").write_text(json.dumps(article) + "\n")
+    (raw / "grounded-questions.jsonl").write_text("{}\n")
+    (data_root / "rl").mkdir()
+    (data_root / "rl" / "search-qa.jsonl").write_text("{}\n")
+    (data_root / "evaluation").mkdir()
+    (data_root / "evaluation" / "contamination-prompts.jsonl").write_text("{}\n")
+    manifest_path = tmp_path / "artifacts" / "manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text("previous\n")
+
+    def fail_atomic_write(_path, _text):
+        raise OSError("simulated manifest replacement failure")
+
+    monkeypatch.setattr(bootstrap_module, "atomic_write_text", fail_atomic_write)
+    with pytest.raises(OSError, match="simulated manifest replacement failure"):
+        bootstrap_local_inputs(data_root, manifest_path, wikipedia_articles=1)
+
+    assert manifest_path.read_text() == "previous\n"
+    assert not list(tmp_path.rglob("*.partial"))
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -176,9 +207,16 @@ def test_worker_prepare_invokes_bootstrap_before_other_prepare_commands(tmp_path
         data / "trajectories.jsonl",
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
-    (data / "wiki-index").mkdir()
-    (data / "rl.jsonl").touch()
+        if path.suffix == ".bin":
+            path.write_bytes(b"\0")
+            path.with_suffix(".manifest.json").write_text("{}\n")
+        else:
+            path.write_text("ready\n")
+    (data / "preparation-manifest.json").write_text("{}\n")
+    (data / "wiki-index" / "lexical").mkdir(parents=True)
+    (data / "wiki-index" / "metadata.sqlite3").write_bytes(b"sqlite")
+    (data / "wiki-index" / "retrieval-manifest.json").write_text("{}\n")
+    (data / "rl.jsonl").write_text("ready\n")
     config = project / "config" / "ssh.env"
     config.write_text(
         "\n".join(
@@ -199,6 +237,7 @@ def test_worker_prepare_invokes_bootstrap_before_other_prepare_commands(tmp_path
                 f"SFT_OUTPUT={outputs / 'sft'}",
                 f"RL_OUTPUT={outputs / 'rl'}",
                 "TRAIN_PROFILE=custom",
+                "ALLOW_CUSTOM_PATHS=1",
             ]
         )
         + "\n"

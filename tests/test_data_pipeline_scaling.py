@@ -570,6 +570,46 @@ def test_prepare_token_corpora_writes_auditable_run_manifest(
     assert reports["general"]["filtering"]["rows_accepted"] == 1
 
 
+def test_prepare_run_manifest_replacement_failure_preserves_previous_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _manifest(tmp_path)
+    output = tmp_path / "prepared"
+    output.mkdir()
+    previous = output / "preparation-manifest.json"
+    previous.write_text("previous\n")
+    tokenizer = RecordingTokenizer()
+
+    def fake_reasoning(_path, stats):
+        stats.rows_seen += 1
+        stats.accept("OpenR1-Math-220k")
+        yield PreparedDocument("reasoning document", "OpenR1-Math-220k", "verified")
+
+    def fake_general(_path, stats):
+        stats.rows_seen += 1
+        stats.accept("FineWeb-Edu")
+        yield PreparedDocument("general document", "FineWeb-Edu", "filtered")
+
+    monkeypatch.setattr("gpt2_reasoning_search.prepare.stream_reasoning_documents", fake_reasoning)
+    monkeypatch.setattr("gpt2_reasoning_search.prepare.stream_general_documents", fake_general)
+
+    def fail_atomic_write(_path, _text):
+        raise OSError("simulated manifest replacement failure")
+
+    monkeypatch.setattr("gpt2_reasoning_search.prepare.atomic_write_text", fail_atomic_write)
+    with pytest.raises(OSError, match="simulated manifest replacement failure"):
+        prepare_token_corpora(
+            tokenizer,
+            manifest_path,
+            output,
+            reasoning_token_cap=100,
+            general_token_cap=100,
+        )
+
+    assert previous.read_text() == "previous\n"
+    assert not list(output.glob("*.partial"))
+
+
 def test_prepare_data_cli_exposes_evaluation_prompt_option() -> None:
     command = get_command(app)
     prepare_data = command.commands["prepare-data"]

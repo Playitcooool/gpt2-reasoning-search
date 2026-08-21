@@ -47,13 +47,16 @@ scripts/slurm/submit_8h_pipeline.sh
 
 The default profile is sized for an eight-hour GPU reservation. Preparation runs before GPU jobs,
 then pretraining, tool SFT, and search RL each get a separate 7.5-hour training budget. Checkpoints
-are resumable and proxy ablations are disabled by default. See the [SSH training guide](docs/SSH_TRAINING.md).
+are resumable; the pretrain job runs the small CUDA smoke gate once before training, and proxy
+ablations are disabled by default. See the [SSH training guide](docs/SSH_TRAINING.md).
 
 For a direct server without Slurm, use the same worker one stage at a time:
 
 ```bash
+./train-ssh setup
 ./train-ssh doctor
 ./train-ssh prepare
+# Wait for `./train-ssh logs prepare` to report completion.
 ./train-ssh pretrain
 ./train-ssh sft
 ./train-ssh rl

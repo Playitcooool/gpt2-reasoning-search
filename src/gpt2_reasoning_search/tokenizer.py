@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -53,7 +55,19 @@ def train_tokenizer(
         single="<|bos|> $A <|eos|>", special_tokens=[("<|bos|>", bos), ("<|eos|>", eos)]
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    tokenizer.save(str(output))
+    temporary_handle = tempfile.NamedTemporaryFile(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+        suffix=".partial",
+        delete=False,
+    )
+    temporary = Path(temporary_handle.name)
+    temporary_handle.close()
+    try:
+        tokenizer.save(str(temporary))
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     return tokenizer
 
 

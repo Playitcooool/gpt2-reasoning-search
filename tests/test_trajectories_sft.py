@@ -90,6 +90,21 @@ def test_generate_and_stream_trajectories_round_trip_jsonl(tmp_path: Path) -> No
     assert "<|tool_call|>" in loaded[1]["text"]
 
 
+def test_trajectory_generation_failure_preserves_previous_output(tmp_path: Path) -> None:
+    output = tmp_path / "trajectories.jsonl"
+    output.write_text("previous\n")
+
+    def rows():
+        yield {"question": "What is 2 + 2?", "answer": "4", "reasoning": "Add."}
+        raise RuntimeError("simulated trajectory producer failure")
+
+    with pytest.raises(RuntimeError, match="simulated trajectory producer failure"):
+        generate_trajectories(rows(), output)
+
+    assert output.read_text() == "previous\n"
+    assert not list(tmp_path.glob("*.partial"))
+
+
 def test_sft_masks_prompt_and_tool_observation_but_trains_actions(tmp_path: Path) -> None:
     document = trajectory_document(
         question="How many moons does Earth have?",

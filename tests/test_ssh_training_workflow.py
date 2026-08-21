@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,8 @@ def _write_config(project: Path, tmp_path: Path, **overrides: object) -> Path:
         "GENERAL_TOKEN_CAP": 100,
         "LEXICAL_ONLY": 1,
         "TRAIN_PROFILE": "8h",
+        # Tests use isolated temporary paths; the production default rejects these by design.
+        "ALLOW_CUSTOM_PATHS": 1,
         "ALLOW_COMBINED_JOB": 0,
         "PREPARE_IN_JOB": 0,
         "RUN_SMOKE": 1,
@@ -140,18 +143,23 @@ def _complete_checkpoint(path: Path) -> None:
         (path / name).touch()
 
 
+def _complete_index(path: Path) -> None:
+    (path / "lexical").mkdir(parents=True, exist_ok=True)
+    (path / "metadata.sqlite3").write_bytes(b"sqlite")
+    (path / "retrieval-manifest.json").write_text("{}\n")
+
+
 def _create_prepared_inputs(tmp_path: Path) -> None:
     inputs = tmp_path / "inputs"
     inputs.mkdir(exist_ok=True)
-    for name in (
-        "tokenizer.json",
-        "reasoning.bin",
-        "general.bin",
-        "trajectories.jsonl",
-        "rl.jsonl",
-    ):
-        (inputs / name).touch()
-    (inputs / "wiki-index").mkdir(exist_ok=True)
+    for name in ("tokenizer.json", "trajectories.jsonl", "rl.jsonl"):
+        (inputs / name).write_text("ready\n")
+    for name in ("reasoning.bin", "general.bin"):
+        path = inputs / name
+        path.write_bytes(b"\0")
+        path.with_suffix(".manifest.json").write_text("{}\n")
+    (inputs / "preparation-manifest.json").write_text("{}\n")
+    _complete_index(inputs / "wiki-index")
 
 
 def _wait_for_file(path: Path) -> str:
@@ -273,6 +281,132 @@ def test_doctor_fails_when_torch_cannot_use_cuda_or_bf16(tmp_path: Path) -> None
 
     assert result.returncode == 1
     assert "CUDA: False bf16: False" in result.stdout
+
+
+def test_fixed_workflow_paths_reject_custom_layout_without_explicit_override(
+    tmp_path: Path,
+) -> None:
+    project = _copy_workflow(tmp_path)
+    rejected_config = _write_config(project, tmp_path, ALLOW_CUSTOM_PATHS=0)
+    rejected = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "prepare"],
+        project=project,
+        config=rejected_config,
+    )
+
+    assert rejected.returncode == 2
+    assert "Fixed workflow path changed" in rejected.stderr
+    assert "ALLOW_CUSTOM_PATHS=1" in rejected.stderr
+
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "df", "awk")
+    _fake_recorder(fake_bin / "uv", "uv", stdout="CUDA: True bf16: True")
+    _fake_recorder(fake_bin / "nvidia-smi", "nvidia-smi", stdout="NVIDIA H100")
+    accepted_config = _write_config(project, tmp_path, ALLOW_CUSTOM_PATHS=1)
+    accepted = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "doctor"],
+        project=project,
+        config=accepted_config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert "NVIDIA H100" in accepted.stdout
+
+
+def test_pretrain_runs_cached_smoke_gate_once_and_marks_success(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    _create_prepared_inputs(tmp_path)
+    config = _write_config(project, tmp_path, RUN_SMOKE=1, RUN_SFT=0, RUN_RL=0)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    first = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "pretrain"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    first_log = calls.read_text()
+    assert first.returncode == 75
+    assert "smoke-overfit" in first_log
+    assert "pretrain" in first_log
+    assert first_log.index("smoke-overfit") < first_log.index("pretrain")
+    assert (project / "artifacts" / "smoke-overfit.ok").read_text() == "passed\n"
+
+    second = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "pretrain"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    second_log = calls.read_text()
+    assert second.returncode == 75
+    assert second_log.count("smoke-overfit") == 1
+    assert second_log.count("CALL uv") == 3
+
+
+def test_worker_rejects_empty_training_artifacts_and_partial_checkpoints(
+    tmp_path: Path,
+) -> None:
+    project = _copy_workflow(tmp_path)
+    inputs = tmp_path / "inputs"
+    outputs = tmp_path / "outputs"
+    inputs.mkdir()
+    (inputs / "tokenizer.json").write_text("ready\n")
+    for name in ("reasoning.bin", "general.bin"):
+        token_path = inputs / name
+        token_path.write_bytes(b"\0")
+        token_path.with_suffix(".manifest.json").write_text("{}\n")
+    (inputs / "preparation-manifest.json").write_text("{}\n")
+    (inputs / "trajectories.jsonl").touch()
+    (inputs / "rl.jsonl").write_text("ready\n")
+    (inputs / "wiki-index").mkdir()
+    _complete_checkpoint(outputs / "main" / "final")
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    sft = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "sft"],
+        project=project,
+        config=_write_config(project, tmp_path, RUN_SMOKE=0),
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    assert sft.returncode == 2
+    assert "Missing or empty required file" in sft.stdout + sft.stderr
+    assert not calls.exists()
+
+    _complete_checkpoint(outputs / "sft")
+    rl = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "rl"],
+        project=project,
+        config=_write_config(project, tmp_path, RUN_SMOKE=0),
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    assert rl.returncode == 2
+    assert "Missing or incomplete Wikipedia index" in rl.stdout + rl.stderr
+    assert not calls.exists()
+
+    # A directory containing only one checkpoint file is not a completed final checkpoint.
+    (outputs / "main" / "final" / "optimizer.pt").unlink()
+    (inputs / "trajectories.jsonl").write_text("ready\n")
+    partial_config = _write_config(project, tmp_path, RUN_SMOKE=0, RUN_SFT=0, RUN_RL=0)
+    partial = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "pretrain"],
+        project=project,
+        config=partial_config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    assert partial.returncode == 75
+    assert "ARG <pretrain>" in calls.read_text()
 
 
 def test_tmux_launcher_preserves_paths_and_stage_as_single_arguments(tmp_path: Path) -> None:
@@ -418,8 +552,11 @@ def test_pretrain_auto_resume_selects_latest_complete_checkpoint_only(tmp_path: 
     config = _write_config(project, tmp_path)
     inputs = tmp_path / "inputs"
     inputs.mkdir()
-    (inputs / "reasoning.bin").touch()
-    (inputs / "general.bin").touch()
+    for name in ("reasoning.bin", "general.bin"):
+        path = inputs / name
+        path.write_bytes(b"\0")
+        path.with_suffix(".manifest.json").write_text("{}\n")
+    (inputs / "preparation-manifest.json").write_text("{}\n")
     output = tmp_path / "outputs" / "main"
     _complete_checkpoint(output / "step-00000010")
     _complete_checkpoint(output / "step-00000020")
@@ -447,12 +584,91 @@ def test_pretrain_auto_resume_selects_latest_complete_checkpoint_only(tmp_path: 
     assert "Re-submit the same stage to resume" in result.stdout + result.stderr
 
 
+def test_worker_requires_raw_token_manifest_but_accepts_legacy_npy(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    raw_reasoning = inputs / "reasoning.bin"
+    raw_general = inputs / "general.bin"
+    raw_reasoning.write_bytes(b"raw")
+    raw_general.write_bytes(b"raw")
+    config = _write_config(project, tmp_path, RUN_SMOKE=0)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    missing_manifest = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "pretrain"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert missing_manifest.returncode == 2
+    assert "Missing token" in missing_manifest.stdout + missing_manifest.stderr
+    assert not calls.exists()
+
+    reasoning_npy = inputs / "reasoning.npy"
+    general_npy = inputs / "general.npy"
+    np.save(reasoning_npy, np.array([1, 2], dtype=np.uint16))
+    np.save(general_npy, np.array([3, 4], dtype=np.uint16))
+    legacy_config = _write_config(
+        project,
+        tmp_path,
+        RUN_SMOKE=0,
+        REASONING_TOKENS=reasoning_npy,
+        GENERAL_TOKENS=general_npy,
+    )
+    (inputs / "preparation-manifest.json").write_text("{}\n")
+
+    legacy = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "pretrain"],
+        project=project,
+        config=legacy_config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert legacy.returncode == 75
+    assert "ARG <pretrain>" in calls.read_text()
+
+
+def test_worker_prepare_rebuilds_raw_tokens_when_manifest_is_missing(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    config = _write_config(project, tmp_path)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / "tokenizer.json").write_text("ready\n")
+    (inputs / "reasoning.bin").write_bytes(b"raw")
+    (inputs / "general.bin").write_bytes(b"raw")
+    (inputs / "wikipedia.jsonl").write_text("{\"id\": \"1\", \"text\": \"article\"}\n")
+    (inputs / "trajectories.jsonl").write_text("ready\n")
+    _complete_index(inputs / "wiki-index")
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    result = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "prepare"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = calls.read_text()
+    assert "ARG <bootstrap-data>" in log
+    assert "ARG <prepare-data>" in log
+
+
 def test_completed_pretrain_stage_skips_uv_and_missing_inputs_fail_before_uv(
     tmp_path: Path,
 ) -> None:
     project = _copy_workflow(tmp_path)
     output = tmp_path / "outputs" / "main"
-    (output / "final").mkdir(parents=True)
+    _complete_checkpoint(output / "final")
     completed_config = _write_config(project, tmp_path)
     calls = tmp_path / "calls.log"
     fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
@@ -477,8 +693,8 @@ def test_completed_pretrain_stage_skips_uv_and_missing_inputs_fail_before_uv(
     assert completed.returncode == 0
     assert "already complete" in completed.stdout
     assert missing.returncode == 2
-    assert "Missing required file" in missing.stdout + missing.stderr
-    assert not calls.exists() or calls.read_text() == ""
+    assert "Missing token" in missing.stdout + missing.stderr
+    assert not calls.exists() or "ARG <pretrain>" not in calls.read_text()
 
 
 @pytest.mark.parametrize("stage", ["sft", "rl"])
@@ -487,12 +703,9 @@ def test_completed_downstream_stage_skips_missing_inputs_and_uv(tmp_path: Path, 
     config = _write_config(project, tmp_path)
     outputs = tmp_path / "outputs"
     if stage == "sft":
-        marker = outputs / "sft" / "model.safetensors"
-        marker.parent.mkdir(parents=True)
-        marker.touch()
+        _complete_checkpoint(outputs / "sft")
     else:
-        marker = outputs / "rl" / "final"
-        marker.mkdir(parents=True)
+        _complete_checkpoint(outputs / "rl" / "final")
     calls = tmp_path / "calls.log"
     fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
     _fake_recorder(fake_bin / "uv", "uv")
@@ -518,14 +731,14 @@ def test_incomplete_downstream_stage_returns_temporary_failure_for_afterok_chain
     inputs = tmp_path / "inputs"
     outputs = tmp_path / "outputs"
     inputs.mkdir()
-    (inputs / "tokenizer.json").touch()
+    (inputs / "tokenizer.json").write_text("ready\n")
     if stage == "sft":
-        (inputs / "trajectories.jsonl").touch()
-        (outputs / "main" / "final").mkdir(parents=True)
+        (inputs / "trajectories.jsonl").write_text("ready\n")
+        _complete_checkpoint(outputs / "main" / "final")
     else:
-        (inputs / "rl.jsonl").touch()
-        (inputs / "wiki-index").mkdir()
-        (outputs / "sft").mkdir(parents=True)
+        (inputs / "rl.jsonl").write_text("ready\n")
+        _complete_index(inputs / "wiki-index")
+        _complete_checkpoint(outputs / "sft")
     config = _write_config(project, tmp_path, **{budget_variable: 7.5})
     calls = tmp_path / "calls.log"
     fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
@@ -561,8 +774,7 @@ def test_custom_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_p
     )
 
     assert result.returncode == 2
-    assert "Missing required file" in result.stdout + result.stderr
-    assert "reasoning.bin" in result.stdout + result.stderr
+    assert "Missing token" in result.stdout + result.stderr
     assert not calls.exists()
 
 
@@ -613,7 +825,7 @@ def test_all_can_opt_into_preparation_inside_the_job(tmp_path: Path) -> None:
     _create_prepared_inputs(tmp_path)
     inputs = tmp_path / "inputs"
     (inputs / "trajectories.jsonl").unlink()
-    (inputs / "grounded.jsonl").touch()
+    (inputs / "grounded.jsonl").write_text("ready\n")
     calls = tmp_path / "calls.log"
     fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
     _fake_recorder(fake_bin / "uv", "uv")

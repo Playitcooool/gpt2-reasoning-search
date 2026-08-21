@@ -5,13 +5,77 @@ import pytest
 import torch
 
 from gpt2_reasoning_search.data import (
+    ContaminationFilter,
     ExactTokenMixture,
     MixtureState,
+    atomic_write_lines,
+    atomic_write_text,
     load_token_array,
     write_token_file,
 )
 from gpt2_reasoning_search.tokenizer import train_tokenizer
 
+
+def test_atomic_text_and_lines_replace_existing_files_without_partials(tmp_path: Path) -> None:
+    text_path = tmp_path / "nested" / "manifest.json"
+    text_path.parent.mkdir(parents=True)
+    text_path.write_text("old\n")
+    atomic_write_text(text_path, "new\n")
+    assert text_path.read_text() == "new\n"
+
+    lines_path = tmp_path / "nested" / "trajectories.jsonl"
+    atomic_write_lines(lines_path, (line for line in ("first", "second\n")))
+    assert lines_path.read_text() == "first\nsecond\n"
+    assert not list(tmp_path.rglob("*.partial"))
+
+
+def test_atomic_writes_preserve_existing_target_when_generation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import gpt2_reasoning_search.data as data_module
+
+    text_path = tmp_path / "manifest.json"
+    text_path.write_text("old\n")
+
+    def fail_replace(_source, _target):
+        raise OSError("simulated replacement failure")
+
+    monkeypatch.setattr(data_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated replacement failure"):
+        atomic_write_text(text_path, "new\n")
+    assert text_path.read_text() == "old\n"
+    assert not list(tmp_path.glob("*.partial"))
+
+    # A producer failure before replacement has the same recoverable behavior.
+    def broken_lines():
+        yield "partial"
+        raise RuntimeError("simulated producer failure")
+
+    monkeypatch.undo()
+    lines_path = tmp_path / "trajectories.jsonl"
+    lines_path.write_text("old\n")
+    with pytest.raises(RuntimeError, match="simulated producer failure"):
+        atomic_write_lines(lines_path, broken_lines())
+    assert lines_path.read_text() == "old\n"
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_write_token_file_rejects_empty_or_fully_filtered_documents(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.txt"
+    sample.write_text("a small tokenizer training sample with enough words\n")
+    tokenizer = train_tokenizer([sample], tmp_path / "tokenizer.json", vocab_size=64)
+
+    with pytest.raises(ValueError, match="no usable tokens"):
+        write_token_file(tokenizer, [], tmp_path / "empty.bin", max_tokens=32)
+
+    with pytest.raises(ValueError, match="no usable tokens"):
+        write_token_file(
+            tokenizer,
+            ["duplicate", "duplicate"],
+            tmp_path / "filtered.bin",
+            max_tokens=32,
+            contamination_filter=ContaminationFilter(["duplicate"], ngram_size=1),
+        )
 
 def test_exact_mixture_hits_integer_quotas_and_cycles_sources() -> None:
     mixture = ExactTokenMixture(

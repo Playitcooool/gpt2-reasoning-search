@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .agent import format_tool_results
+from .data import atomic_write_lines
 from .schemas import SearchArguments, SearchResult, ToolCall
 
 
@@ -69,16 +70,20 @@ def multi_step_trajectory_document(
 
 def generate_trajectories(rows: Iterable[dict], output: Path) -> int:
     """Normalize evidence-grounded rows; expected fields are documented in README."""
-    output.parent.mkdir(parents=True, exist_ok=True)
     count = 0
-    with output.open("w") as handle:
+
+    def serialized_rows() -> Iterable[str]:
+        nonlocal count
         for row in rows:
             reasoning = row.get("reasoning", "Use the supplied evidence to answer the question.")
             if "searches" in row:
                 searches = [
                     (
                         step["query"],
-                        [SearchResult.model_validate(item) for item in step.get("evidence", [])],
+                        [
+                            SearchResult.model_validate(item)
+                            for item in step.get("evidence", [])
+                        ],
                     )
                     for step in row["searches"]
                 ]
@@ -86,7 +91,9 @@ def generate_trajectories(rows: Iterable[dict], output: Path) -> int:
                     row["question"], row["answer"], searches, reasoning
                 )
             else:
-                evidence = [SearchResult.model_validate(item) for item in row.get("evidence", [])]
+                evidence = [
+                    SearchResult.model_validate(item) for item in row.get("evidence", [])
+                ]
                 document = trajectory_document(
                     question=row["question"],
                     answer=row["answer"],
@@ -94,8 +101,10 @@ def generate_trajectories(rows: Iterable[dict], output: Path) -> int:
                     evidence=evidence,
                     reasoning=reasoning,
                 )
-            handle.write(json.dumps({"text": document}, ensure_ascii=False) + "\n")
             count += 1
+            yield json.dumps({"text": document}, ensure_ascii=False)
+
+    atomic_write_lines(output, serialized_rows(), require_nonempty=True)
     return count
 
 

@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 from datasets import load_dataset
 
-from .data import stream_huggingface_texts
+from .data import atomic_write_text, stream_huggingface_texts
 
 WIKIPEDIA_DATASET = "wikimedia/wikipedia"
 WIKIPEDIA_CONFIG = "20231101.en"
@@ -20,6 +20,7 @@ WIKIPEDIA_REVISION = "b04c8d1ceb2f5cd4588862100d08de323dccfbaa"
 WIKIPEDIA_LICENSE = "CC-BY-SA-3.0 and GFDL; preserve Wikimedia attribution"
 WIKIPEDIA_ARTICLE_LIMIT = 5_000
 TOKENIZER_SAMPLE_LIMIT = 512
+TOKENIZER_SAMPLE_MARKER = ".bootstrap-complete.json"
 
 _FINEWEB_REVISION = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
 _FINEWEB_CONFIG = "sample-10BT"
@@ -115,11 +116,33 @@ def _read_wikipedia(path: Path, limit: int) -> list[dict[str, str]]:
 
 
 def _write_tokenizer_samples(directory: Path) -> int:
-    existing = sorted(directory.glob("*.txt")) if directory.exists() else []
-    if existing:
-        return len(existing)
     directory.mkdir(parents=True, exist_ok=True)
+    existing = sorted(directory.glob("*.txt"))
+    marker = directory / TOKENIZER_SAMPLE_MARKER
+    if marker.exists():
+        try:
+            marker_data = json.loads(marker.read_text(encoding="utf-8"))
+            generated_files = marker_data["generated_files"]
+            if (
+                marker_data["reasoning_revision"] == _REASONING_REVISION
+                and marker_data["fineweb_revision"] == _FINEWEB_REVISION
+                and isinstance(generated_files, list)
+                and generated_files
+                and all((directory / str(name)).is_file() for name in generated_files)
+            ):
+                return len(existing)
+        except (KeyError, TypeError, ValueError):
+            pass
+    # A seed file identifies an interrupted automatic bootstrap. Preserve unrelated user samples,
+    # but remove the generated names so a retry cannot silently keep a truncated sample set.
+    seed = directory / "bootstrap-seed.txt"
+    if existing and not seed.exists():
+        return len(existing)
+    for path in existing:
+        if path.name == seed.name or path.name.startswith(("reasoning-", "education-")):
+            path.unlink()
     (directory / "bootstrap-seed.txt").write_text(_SEED_TEXT, encoding="utf-8")
+    generated_files = [seed.name]
     count = 1
     streams = (
         (
@@ -148,11 +171,27 @@ def _write_tokenizer_samples(directory: Path) -> int:
             text = str(row.get("text", "")).strip()
             if len(text) < 100:
                 continue
-            (directory / f"{label}-{index:05d}.txt").write_text(text[:20_000], encoding="utf-8")
+            sample_path = directory / f"{label}-{index:05d}.txt"
+            sample_path.write_text(text[:20_000], encoding="utf-8")
+            generated_files.append(sample_path.name)
             count += 1
             stream_count += 1
             if stream_count >= per_stream_limit:
                 break
+    atomic_write_text(
+        marker,
+        json.dumps(
+            {
+                "format_version": 1,
+                "reasoning_revision": _REASONING_REVISION,
+                "fineweb_revision": _FINEWEB_REVISION,
+                "generated_files": generated_files,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
     return count
 
 
@@ -276,7 +315,5 @@ def bootstrap_local_inputs(
             "evaluation_prompts": _sha256(evaluation_path),
         },
     }
-    manifest_output.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(manifest_output, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest

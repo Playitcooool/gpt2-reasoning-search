@@ -24,13 +24,15 @@ squeue -u "$USER"
 The wrapper prepares the data before submitting the GPU jobs, then submits pretrain -> SFT -> RL with
 `afterok` dependencies and passes the configured account, GPU, memory, CPU, and wall-time settings
 to `sbatch`. Each stage receives an eight-hour reservation and trains for 7.5 hours,
-leaving margin for startup and checkpoint finalization. It skips proxy ablations by default.
+leaving margin for startup and checkpoint finalization. The pretrain job runs the small CUDA smoke
+gate once before training, and it skips proxy ablations by default.
 
 ## Direct SSH start (without Slurm)
 
 Use this mode only when the H100 is already allocated to your shell:
 
 ```bash
+./train-ssh setup       # once per checkout; creates config/ssh.env
 ./train-ssh doctor
 ./train-ssh prepare
 ./train-ssh pretrain

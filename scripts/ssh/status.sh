@@ -9,6 +9,13 @@ source "$CONFIG_FILE"
 set +a
 cd "$PROJECT_ROOT"
 
+checkpoint_complete() {
+  local directory="$1"
+  [[ -f "$directory/model.safetensors" && -f "$directory/optimizer.pt" \
+    && -f "$directory/scheduler.pt" && -f "$directory/rng.pt" \
+    && -f "$directory/state.json" ]]
+}
+
 echo "GPU"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu \
@@ -35,7 +42,7 @@ for output in "$CHECKPOINT_ROOT"/proxy-r0 "$CHECKPOINT_ROOT"/proxy-r30 \
   "$CHECKPOINT_ROOT"/proxy-r70 "$MAIN_OUTPUT" "$SFT_OUTPUT" "$RL_OUTPUT"; do
   [[ -e "$output" ]] || continue
   latest="$(find "$output" -maxdepth 1 -type d -name 'step-*' -print 2>/dev/null | sort | tail -1)"
-  if [[ -d "$output/final" || -f "$output/model.safetensors" ]]; then
+  if checkpoint_complete "$output/final" || checkpoint_complete "$output"; then
     state="complete"
   else
     state="${latest##*/}"

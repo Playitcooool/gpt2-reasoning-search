@@ -16,6 +16,41 @@ set -a
 source "$CONFIG_FILE"
 set +a
 
+validate_workflow_paths() {
+  [[ "${ALLOW_CUSTOM_PATHS:-0}" == "1" ]] && return 0
+  local specification name expected actual invalid=0
+  for specification in \
+    "TOKENIZER_INPUT_DIR|data/tokenizer-sample" \
+    "TOKENIZER_PATH|artifacts/tokenizer.json" \
+    "EVALUATION_PROMPTS|data/evaluation/contamination-prompts.jsonl" \
+    "REASONING_TOKENS|data/processed/reasoning.bin" \
+    "GENERAL_TOKENS|data/processed/general.bin" \
+    "WIKIPEDIA_JSONL|data/raw/wikipedia.jsonl" \
+    "GROUNDED_QUESTIONS|data/raw/grounded-questions.jsonl" \
+    "RL_PROMPTS|data/rl/search-qa.jsonl" \
+    "TRAJECTORIES|data/processed/tool-trajectories.jsonl" \
+    "WIKI_INDEX|artifacts/wiki-index" \
+    "CHECKPOINT_ROOT|checkpoints" \
+    "MAIN_OUTPUT|checkpoints/main-350m" \
+    "SFT_OUTPUT|checkpoints/tool-sft" \
+    "RL_OUTPUT|checkpoints/search-rl"; do
+    name="${specification%%|*}"
+    expected="${specification#*|}"
+    actual="${!name:-}"
+    if [[ "$actual" != "$expected" && "$actual" != "$PROJECT_ROOT/$expected" ]]; then
+      echo "Fixed workflow path changed: $name=$actual (expected $expected)." >&2
+      invalid=1
+    fi
+  done
+  if ((invalid)); then
+    echo "Do not edit data/checkpoint paths in config/ssh.env; the automatic pipeline owns them." >&2
+    echo "Set ALLOW_CUSTOM_PATHS=1 only for an explicitly managed custom layout." >&2
+    return 2
+  fi
+}
+
+validate_workflow_paths || exit $?
+
 # Existing config/ssh.env files are intentionally not overwritten by setup. Make an older config
 # follow the new eight-hour default unless the user explicitly selects a custom profile.
 if [[ "${TRAIN_PROFILE:-8h}" == "8h" ]]; then
@@ -61,6 +96,45 @@ fi
 
 require_file() {
   [[ -f "$1" ]] || { echo "Missing required file: $1" >&2; exit 2; }
+}
+
+require_nonempty_file() {
+  [[ -s "$1" ]] || { echo "Missing or empty required file: $1" >&2; exit 2; }
+}
+
+token_file_ready() {
+  local path="$1"
+  [[ -s "$path" ]] || return 1
+  [[ "$path" == *.npy ]] || [[ -f "${path%.*}.manifest.json" ]]
+}
+
+corpora_ready() {
+  token_file_ready "$REASONING_TOKENS" && token_file_ready "$GENERAL_TOKENS" \
+    && [[ -s "$(dirname "$REASONING_TOKENS")/preparation-manifest.json" ]]
+}
+
+wiki_index_ready() {
+  [[ -d "$WIKI_INDEX/lexical" && -f "$WIKI_INDEX/metadata.sqlite3" \
+    && -f "$WIKI_INDEX/retrieval-manifest.json" ]]
+}
+
+checkpoint_complete() {
+  local directory="$1"
+  [[ -f "$directory/model.safetensors" && -f "$directory/optimizer.pt" \
+    && -f "$directory/scheduler.pt" && -f "$directory/rng.pt" \
+    && -f "$directory/state.json" ]]
+}
+
+require_corpora() {
+  if ! token_file_ready "$REASONING_TOKENS" || ! token_file_ready "$GENERAL_TOKENS"; then
+    echo "Missing token file or manifest." >&2
+    echo "Run ./train-ssh prepare before training." >&2
+    exit 2
+  fi
+  [[ -s "$(dirname "$REASONING_TOKENS")/preparation-manifest.json" ]] || {
+    echo "Missing preparation manifest; run ./train-ssh prepare again." >&2
+    exit 2
+  }
 }
 
 require_dir() {
@@ -111,7 +185,13 @@ run_doctor() {
   df -h "$PROJECT_ROOT" "$TRAIN_CACHE" | awk 'NR == 1 || !seen[$1]++'
   for path in "$REASONING_TOKENS" "$GENERAL_TOKENS" "$TOKENIZER_PATH" \
     "$WIKIPEDIA_JSONL" "$GROUNDED_QUESTIONS" "$RL_PROMPTS"; do
-    if [[ -e "$path" ]]; then echo "OK:      $path"; else echo "PENDING: $path"; fi
+    if [[ "$path" == *.bin ]]; then
+      if token_file_ready "$path"; then echo "OK:      $path"; else echo "PENDING: $path"; fi
+    elif [[ -s "$path" ]]; then
+      echo "OK:      $path"
+    else
+      echo "PENDING: $path"
+    fi
   done
   if command -v uv >/dev/null 2>&1; then
     local cuda_report
@@ -135,7 +215,7 @@ run_prepare() {
   uv run --locked gpt2-reasoning-search bootstrap-data \
     --data-root "$PROJECT_ROOT/data" \
     --manifest-output "$PROJECT_ROOT/artifacts/auto-data-manifest.json"
-  if [[ ! -f "$TOKENIZER_PATH" ]]; then
+  if [[ ! -s "$TOKENIZER_PATH" ]]; then
     local tokenizer_inputs=()
     while IFS= read -r tokenizer_input; do
       tokenizer_inputs+=("$tokenizer_input")
@@ -147,7 +227,7 @@ run_prepare() {
     uv run --locked gpt2-reasoning-search train-tokenizer "${tokenizer_inputs[@]}" \
       --output "$TOKENIZER_PATH" --vocab-size 50304
   fi
-  if [[ ! -f "$REASONING_TOKENS" || ! -f "$GENERAL_TOKENS" ]]; then
+  if ! corpora_ready; then
     local evaluation_args=()
     if [[ -f "$EVALUATION_PROMPTS" ]]; then
       evaluation_args=(--evaluation-prompts "$EVALUATION_PROMPTS")
@@ -160,8 +240,8 @@ run_prepare() {
     if ((${#evaluation_args[@]} > 0)); then args+=("${evaluation_args[@]}"); fi
     "${args[@]}"
   fi
-  if [[ ! -d "$WIKI_INDEX" ]]; then
-    require_file "$WIKIPEDIA_JSONL"
+  if ! wiki_index_ready; then
+    require_nonempty_file "$WIKIPEDIA_JSONL"
     local index_args=()
     if [[ "${LEXICAL_ONLY:-0}" == "1" ]]; then
       index_args=(--lexical-only)
@@ -171,8 +251,8 @@ run_prepare() {
     if ((${#index_args[@]} > 0)); then args+=("${index_args[@]}"); fi
     "${args[@]}"
   fi
-  if [[ ! -f "$TRAJECTORIES" ]]; then
-    require_file "$GROUNDED_QUESTIONS"
+  if [[ ! -s "$TRAJECTORIES" ]]; then
+    require_nonempty_file "$GROUNDED_QUESTIONS"
     uv run --locked gpt2-reasoning-search make-trajectories "$GROUNDED_QUESTIONS" \
       --output "$TRAJECTORIES"
   fi
@@ -180,17 +260,19 @@ run_prepare() {
 
 require_prepared() {
   if [[ "${RUN_PRETRAIN:-1}" == "1" || "${RUN_PROXIES:-0}" == "1" ]]; then
-    require_file "$REASONING_TOKENS"
-    require_file "$GENERAL_TOKENS"
+    require_corpora
   fi
   if [[ "${RUN_SFT:-1}" == "1" ]]; then
-    require_file "$TOKENIZER_PATH"
-    require_file "$TRAJECTORIES"
+    require_nonempty_file "$TOKENIZER_PATH"
+    require_nonempty_file "$TRAJECTORIES"
   fi
   if [[ "${RUN_RL:-1}" == "1" ]]; then
-    require_file "$TOKENIZER_PATH"
-    require_dir "$WIKI_INDEX"
-    require_file "$RL_PROMPTS"
+    require_nonempty_file "$TOKENIZER_PATH"
+    wiki_index_ready || {
+      echo "Missing or incomplete Wikipedia index: $WIKI_INDEX" >&2
+      exit 2
+    }
+    require_nonempty_file "$RL_PROMPTS"
   fi
 }
 
@@ -198,14 +280,24 @@ run_smoke() {
   uv run --locked gpt2-reasoning-search smoke-overfit --device cuda
 }
 
+run_smoke_gate() {
+  [[ "${RUN_SMOKE:-1}" == "1" ]] || return 0
+  local marker="$PROJECT_ROOT/artifacts/smoke-overfit.ok"
+  if [[ -f "$marker" ]]; then
+    echo "Smoke gate already passed: $marker"
+    return 0
+  fi
+  run_smoke
+  printf 'passed\n' > "$marker"
+}
+
 run_pretrain_job() {
   local name="$1" preset="$2" ratio="$3" token_cap="$4" hours="$5" output="$6"
-  if [[ -d "$output/final" ]]; then
+  if checkpoint_complete "$output/final"; then
     echo "$name already complete: $output/final"
     return
   fi
-  require_file "$REASONING_TOKENS"
-  require_file "$GENERAL_TOKENS"
+  require_corpora
   set_resume_args "$output"
   local args=(uv run --locked gpt2-reasoning-search pretrain \
     --reasoning-tokens "$REASONING_TOKENS" --general-tokens "$GENERAL_TOKENS" \
@@ -213,7 +305,7 @@ run_pretrain_job() {
     --max-tokens "$token_cap" --time-budget-hours "$hours")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"
-  if [[ ! -d "$output/final" ]]; then
+  if ! checkpoint_complete "$output/final"; then
     echo "$name reached its time budget without a final checkpoint. Re-submit the same stage to resume." >&2
     return 75
   fi
@@ -229,17 +321,25 @@ run_proxies() {
 }
 
 run_pretrain() {
+  if checkpoint_complete "$MAIN_OUTPUT/final"; then
+    echo "main-r70 already complete: $MAIN_OUTPUT/final"
+    return
+  fi
+  run_smoke_gate
   run_pretrain_job main-r70 main-350m 0.7 "$MAIN_TOKEN_CAP" "$MAIN_HOURS" "$MAIN_OUTPUT"
 }
 
 run_sft() {
-  if [[ -f "$SFT_OUTPUT/model.safetensors" ]]; then
+  if checkpoint_complete "$SFT_OUTPUT"; then
     echo "Tool SFT already complete: $SFT_OUTPUT"
     return
   fi
-  require_dir "$MAIN_OUTPUT/final"
-  require_file "$TOKENIZER_PATH"
-  require_file "$TRAJECTORIES"
+  checkpoint_complete "$MAIN_OUTPUT/final" || {
+    echo "Missing or incomplete pretraining checkpoint: $MAIN_OUTPUT/final" >&2
+    exit 2
+  }
+  require_nonempty_file "$TOKENIZER_PATH"
+  require_nonempty_file "$TRAJECTORIES"
   set_resume_args "$SFT_OUTPUT"
   local args=(uv run --locked gpt2-reasoning-search sft-tools \
     --checkpoint "$MAIN_OUTPUT/final" --tokenizer-path "$TOKENIZER_PATH" \
@@ -249,21 +349,27 @@ run_sft() {
     --gradient-accumulation-steps "$SFT_GRAD_ACCUM")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"
-  if [[ ! -f "$SFT_OUTPUT/model.safetensors" ]]; then
+  if ! checkpoint_complete "$SFT_OUTPUT"; then
     echo "Tool SFT reached its time budget without a final checkpoint. Re-submit the same stage to resume." >&2
     return 75
   fi
 }
 
 run_rl() {
-  if [[ -d "$RL_OUTPUT/final" ]]; then
+  if checkpoint_complete "$RL_OUTPUT/final"; then
     echo "Search RL already complete: $RL_OUTPUT/final"
     return
   fi
-  require_dir "$SFT_OUTPUT"
-  require_file "$TOKENIZER_PATH"
-  require_file "$RL_PROMPTS"
-  require_dir "$WIKI_INDEX"
+  checkpoint_complete "$SFT_OUTPUT" || {
+    echo "Missing or incomplete tool-SFT checkpoint: $SFT_OUTPUT" >&2
+    exit 2
+  }
+  require_nonempty_file "$TOKENIZER_PATH"
+  require_nonempty_file "$RL_PROMPTS"
+  wiki_index_ready || {
+    echo "Missing or incomplete Wikipedia index: $WIKI_INDEX" >&2
+    exit 2
+  }
   set_resume_args "$RL_OUTPUT"
   local judge_args=(--llm-judge --judge-device cuda)
   if [[ "${USE_LLM_JUDGE:-1}" == "0" ]]; then
@@ -277,7 +383,7 @@ run_rl() {
     "${judge_args[@]}")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"
-  if [[ ! -d "$RL_OUTPUT/final" ]]; then
+  if ! checkpoint_complete "$RL_OUTPUT/final"; then
     echo "Search RL reached its time budget without a final checkpoint. Re-submit the same stage to resume." >&2
     return 75
   fi
@@ -298,7 +404,7 @@ case "$STAGE" in
       exit 2
     fi
     if [[ "${PREPARE_IN_JOB:-0}" == "1" ]]; then run_prepare; else require_prepared; fi
-    if [[ "${RUN_SMOKE:-1}" == "1" ]]; then run_smoke; fi
+    if [[ "${RUN_SMOKE:-1}" == "1" ]]; then run_smoke_gate; fi
     if [[ "${RUN_PROXIES:-0}" == "1" ]]; then run_proxies; fi
     if [[ "${RUN_PRETRAIN:-1}" == "1" ]]; then run_pretrain; fi
     if [[ "${RUN_SFT:-1}" == "1" ]]; then run_sft; fi

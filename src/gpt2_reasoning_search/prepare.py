@@ -14,6 +14,7 @@ from .data import (
     ContaminationFilter,
     PreparationStats,
     PreparedDocument,
+    atomic_write_text,
     reasoning_document,
     stream_huggingface_texts,
     write_token_file,
@@ -242,7 +243,8 @@ def prepare_token_corpora(
         "evaluation_prompts": len(evaluation_prompts),
         "outputs": reports,
     }
-    (output_directory / "preparation-manifest.json").write_text(
-        json.dumps(run_manifest, indent=2, sort_keys=True) + "\n"
+    atomic_write_text(
+        output_directory / "preparation-manifest.json",
+        json.dumps(run_manifest, indent=2, sort_keys=True) + "\n",
     )
     return reports

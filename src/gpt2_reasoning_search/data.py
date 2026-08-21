@@ -38,6 +38,63 @@ class PreparedDocument:
     verification: str = "source-curated"
 
 
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Write a text artifact atomically so interrupted preparation cannot publish a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding=encoding,
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".partial",
+        delete=False,
+    )
+    temporary = Path(temporary_handle.name)
+    try:
+        with temporary_handle:
+            temporary_handle.write(text)
+            temporary_handle.flush()
+            os.fsync(temporary_handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_write_lines(
+    path: Path,
+    lines: Iterable[str],
+    *,
+    encoding: str = "utf-8",
+    require_nonempty: bool = False,
+) -> None:
+    """Stream text lines to an atomic replacement without buffering the whole artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding=encoding,
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".partial",
+        delete=False,
+    )
+    temporary = Path(temporary_handle.name)
+    try:
+        with temporary_handle:
+            wrote_line = False
+            for line in lines:
+                wrote_line = True
+                temporary_handle.write(line)
+                if not line.endswith("\n"):
+                    temporary_handle.write("\n")
+            if require_nonempty and not wrote_line:
+                raise ValueError(f"no lines were written to {path}")
+            temporary_handle.flush()
+            os.fsync(temporary_handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 @dataclass(slots=True)
 class PreparationStats:
     rows_seen: int = 0
@@ -282,6 +339,8 @@ def write_token_file(
                     break
             else:
                 flush(handle)
+            if written == 0:
+                raise ValueError(f"no usable tokens were written to {output_path}")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_output, output_path)
@@ -308,7 +367,7 @@ def write_token_file(
     if preparation_stats is not None:
         report["filtering"] = preparation_stats.to_dict()
     manifest_path = output_path.with_suffix(".manifest.json")
-    manifest_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    atomic_write_text(manifest_path, json.dumps(report, indent=2, sort_keys=True) + "\n")
     return report
 
 
