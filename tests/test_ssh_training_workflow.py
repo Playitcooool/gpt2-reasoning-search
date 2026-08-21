@@ -326,47 +326,27 @@ def test_nohup_fallback_uses_argument_safe_env_invocation(tmp_path: Path) -> Non
     assert (project / "logs" / "rl.pid").is_file()
 
 
-def test_slurm_submission_uses_configured_resources_and_validated_stage(tmp_path: Path) -> None:
+def test_removed_slurm_alias_is_rejected_and_canonical_commands_are_documented(
+    tmp_path: Path,
+) -> None:
     project = _copy_workflow(tmp_path)
-    config = _write_config(project, tmp_path)
-    calls = tmp_path / "calls.log"
-    fake_bin = _fake_bin(tmp_path, "mkdir")
-    _fake_recorder(fake_bin / "sbatch", "sbatch", stdout="Submitted batch job 42")
-
-    result = _run(
+    help_result = _run([project / "train-ssh", "--help"], project=project)
+    alias_result = _run(
         [project / "train-ssh", "slurm", "pretrain"],
         project=project,
-        config=config,
-        path=str(fake_bin),
-        extra_env={"FAKE_CALLS": str(calls)},
     )
-    invalid = _run(
-        [project / "train-ssh", "slurm", "unknown"],
-        project=project,
-        config=config,
-        path=str(fake_bin),
-        extra_env={"FAKE_CALLS": str(calls)},
-    )
+    guide = (ROOT / "docs" / "SSH_TRAINING.md").read_text()
 
-    assert result.returncode == 0
-    log = calls.read_text()
-    for argument in (
-        "--job-name=school-grs-pretrain",
-        "--gres=gpu:h100:1",
-        "--cpus-per-task=8",
-        "--mem=64G",
-        "--time=08:00:00",
-        "--partition=gpu-school",
-        "--account=class-account",
-    ):
-        assert f"ARG <{argument}>" in log
-    assert f"ARG <--export=ALL,SSH_TRAIN_CONFIG={config}>" in log
-    assert "ARG <pretrain>" in log
-    assert invalid.returncode == 2
-    assert "Choose:" in invalid.stderr
+    assert help_result.returncode == 0
+    assert "./train-ssh slurm" not in help_result.stdout
+    assert alias_result.returncode == 2
+    assert "./train-ssh slurm" not in alias_result.stderr
+    assert "scripts/slurm/submit_8h_pipeline.sh" in guide
+    assert "sbatch scripts/slurm/train_h100.sbatch pretrain" in guide
+    assert "sbatch scripts/slurm/submit_8h_pipeline.sh" not in guide
 
 
-@pytest.mark.parametrize("command", [["all"], ["slurm", "all"]])
+@pytest.mark.parametrize("command", [["all"]])
 def test_default_eight_hour_launcher_rejects_combined_all_without_starting_job(
     tmp_path: Path, command: list[str]
 ) -> None:
@@ -686,7 +666,9 @@ def test_default_cluster_config_and_docs_describe_eight_hour_profile() -> None:
         'SLURM_TIME="08:00:00"',
     ):
         assert setting in example
-    assert "${SLURM_TIME:-08:00:00}" in launcher
+    # Slurm resource directives now live in the checked-in batch template and
+    # pipeline wrapper; the SSH launcher no longer submits jobs itself.
+    assert "${SLURM_TIME:-08:00:00}" not in launcher
     assert "#SBATCH --time=08:00:00" in slurm_template
     assert "eight-hour" in docs
     assert "2.5B-token cap" in docs
@@ -734,5 +716,7 @@ def test_config_is_ignored_and_documented_commands_match_launcher() -> None:
         assert f"./train-ssh {command}" in guide + readme
         assert command in launcher
     assert "combined `all` stage is blocked" in " ".join(guide.split())
-    assert "all" in launcher and "slurm" in launcher
+    assert "all" in launcher
+    assert "./train-ssh slurm" not in launcher
+    assert "scripts/slurm/submit_8h_pipeline.sh" in launcher
     assert "./train-ssh logs prepare" in guide

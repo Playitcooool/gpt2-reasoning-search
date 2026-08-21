@@ -97,6 +97,14 @@ def projected_token_budget(
     return max(min(cap, quantum), bounded)
 
 
+def warmup_cosine_factor(step: int, total_steps: int, warmup_steps: int) -> float:
+    """Return the shared warmup-plus-cosine multiplier used by post-training stages."""
+    if step < warmup_steps:
+        return (step + 1) / max(1, warmup_steps)
+    progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
+    return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
 def optimizer_parameter_groups(model: GPT2ReasoningModel, weight_decay: float) -> list[dict]:
     decay, no_decay = [], []
     for parameter in model.parameters():

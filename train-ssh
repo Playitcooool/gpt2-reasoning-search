@@ -19,7 +19,6 @@ Easy SSH/H100 training
   ./train-ssh rl                    Train or auto-resume search RL with Qwen judge
   ./train-ssh all                   Run a combined custom profile (blocked by default for 8h)
   ./train-ssh foreground STAGE      Run a stage in the current terminal
-  ./train-ssh slurm STAGE           Submit a stage through sbatch
   ./train-ssh status                Show jobs, GPU state, checkpoints, and recent metrics
   ./train-ssh logs [STAGE]          Follow a stage log
   ./train-ssh attach [STAGE]        Attach to its tmux session, or follow its log
@@ -78,34 +77,6 @@ launch() {
   echo "Follow it with: ./train-ssh logs $stage"
 }
 
-submit_slurm() {
-  local stage="$1"
-  load_config
-  if [[ "$stage" == "all" && "${TRAIN_PROFILE:-8h}" == "8h" \
-    && "${ALLOW_COMBINED_JOB:-0}" != "1" ]]; then
-    echo "The 8-hour profile requires separate pretrain, sft, and rl stages." >&2
-    echo "Use scripts/slurm/submit_8h_pipeline.sh for dependent Slurm jobs." >&2
-    exit 2
-  fi
-  command -v sbatch >/dev/null 2>&1 || {
-    echo "sbatch is not available on this server." >&2
-    exit 2
-  }
-  mkdir -p "$PROJECT_ROOT/logs"
-  local args=(
-    --job-name="${SESSION_PREFIX:-grs}-$stage"
-    --gres="${SLURM_GRES:-gpu:1}"
-    --cpus-per-task="${SLURM_CPUS:-16}"
-    --mem="${SLURM_MEMORY:-128G}"
-    --time="${SLURM_TIME:-08:00:00}"
-    --output="$PROJECT_ROOT/logs/slurm-%j.log"
-    --export="ALL,SSH_TRAIN_CONFIG=$CONFIG_FILE"
-  )
-  [[ -n "${SLURM_PARTITION:-}" ]] && args+=(--partition="$SLURM_PARTITION")
-  [[ -n "${SLURM_ACCOUNT:-}" ]] && args+=(--account="$SLURM_ACCOUNT")
-  sbatch "${args[@]}" "$WORKER" "$stage"
-}
-
 validate_stage() {
   local stage="${1:-}"
   case "$stage" in
@@ -123,11 +94,6 @@ case "${1:-help}" in
     validate_stage "$stage"
     load_config
     exec "$WORKER" "$stage"
-    ;;
-  slurm)
-    stage="${2:-}"
-    validate_stage "$stage"
-    submit_slurm "$stage"
     ;;
   status) load_config; exec "$PROJECT_ROOT/scripts/ssh/status.sh" ;;
   logs)

@@ -40,5 +40,4 @@ uv run --locked gpt2-reasoning-search version
 echo
 echo "Setup complete. Next:"
 echo "  1. Edit config/ssh.env for SLURM_ACCOUNT, SLURM_TIME, and any required partition/GPU name."
-echo "  2. Run ./train-ssh doctor"
-echo "  3. Run ./train-ssh prepare, then submit scripts/slurm/submit_8h_pipeline.sh"
+echo "  2. Submit scripts/slurm/submit_8h_pipeline.sh (it prepares data automatically)."

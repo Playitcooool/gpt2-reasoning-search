@@ -21,6 +21,10 @@ command -v sbatch >/dev/null 2>&1 || {
 
 cd "$PROJECT_ROOT"
 mkdir -p logs
+set -a
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+set +a
 export SSH_TRAIN_CONFIG="$CONFIG_FILE"
 
 echo "Preparing data and fixed training inputs before submitting GPU jobs..."
@@ -30,7 +34,17 @@ submit() {
   local dependency="$1"
   local stage="$2"
   local output
-  local args=(--parsable --export="ALL,SSH_TRAIN_CONFIG=$CONFIG_FILE")
+  local args=(
+    --parsable
+    --job-name="${SESSION_PREFIX:-grs}-$stage"
+    --gres="${SLURM_GRES:-gpu:1}"
+    --cpus-per-task="${SLURM_CPUS:-16}"
+    --mem="${SLURM_MEMORY:-128G}"
+    --time="${SLURM_TIME:-08:00:00}"
+    --export="ALL,SSH_TRAIN_CONFIG=$CONFIG_FILE"
+  )
+  [[ -n "${SLURM_PARTITION:-}" ]] && args+=(--partition="$SLURM_PARTITION")
+  [[ -n "${SLURM_ACCOUNT:-}" ]] && args+=(--account="$SLURM_ACCOUNT")
   if [[ -n "$dependency" ]]; then
     args+=(--dependency="afterok:$dependency")
   fi
@@ -48,7 +62,7 @@ sft_job="$(submit "$pretrain_job" sft)"
 rl_job="$(submit "$sft_job" rl)"
 
 cat <<EOF
-Submitted the independent eight-hour stages:
+Submitted the separate eight-hour stages:
   pretrain: $pretrain_job
   SFT:      $sft_job (afterok:$pretrain_job)
   RL:       $rl_job (afterok:$sft_job)

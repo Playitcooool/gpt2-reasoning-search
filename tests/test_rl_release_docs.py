@@ -8,7 +8,6 @@ from typer.testing import CliRunner
 
 from gpt2_reasoning_search.api import create_app
 from gpt2_reasoning_search.cli import app
-from gpt2_reasoning_search.experiment import one_h100_schedule
 from gpt2_reasoning_search.judge import (
     DEFAULT_QWEN_JUDGE_MODEL,
     DEFAULT_QWEN_JUDGE_REVISION,
@@ -130,7 +129,7 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
     model_card = " ".join((ROOT / "MODEL_CARD.md").read_text().split())
     security = " ".join((ROOT / "SECURITY.md").read_text().split())
 
-    documented_command = " ".join(readme.split())
+    documented_command = " ".join((readme + rl_guide).split())
     for option in (
         "--checkpoint checkpoints/tool-sft",
         "--tokenizer-path artifacts/tokenizer.json",
@@ -193,34 +192,28 @@ def test_auxiliary_judge_defaults_and_ablation_are_documented() -> None:
     for document in (guide, runbook):
         assert "Qwen/Qwen3.5-2B" in document
         assert "revision-pinned" in document
-    assert "--llm-judge --judge-device cuda" in readme
-    assert "--no-llm-judge" in readme
+    assert "--llm-judge --judge-device cuda" in guide
     assert "--no-llm-judge" in guide
     assert "scores for answer correctness, evidence support, and search quality" in guide
     assert "prompt injection" in security
     assert "judge" in security
 
 
-def test_h100_runbook_allocation_totals_exactly_one_day_and_includes_rl() -> None:
+def test_h100_runbook_documents_the_current_eight_hour_stage_profile() -> None:
     runbook = (ROOT / "docs" / "H100_RUNBOOK.md").read_text()
-    allocation = runbook.split("## Original 24-hour allocation", 1)[1].split(
-        "The trainer measures", 1
+    profile = runbook.split("## Eight-hour stage profile", 1)[1].split(
+        "## Resume and monitoring", 1
     )[0]
-    hours = [float(value) for value in re.findall(r"(?:up to )?(\d+(?:\.\d+)?) hours?", allocation)]
+    normalized_profile = " ".join(profile.split())
 
-    assert hours == [0.5, 4.5, 14.0, 1.5, 2.0, 1.5]
-    assert sum(hours) == 24.0
-    assert "Search RL: 2 hours" in allocation
-    assert (
-        "--output checkpoints/search-rl --epochs 8 --group-size 4 --time-budget-hours 7.5"
-        in " ".join(runbook.split())
-    )
-
-    scheduled = one_h100_schedule()
-    proxies = [run for run in scheduled if run.preset == "proxy-124m"]
-    main = [run for run in scheduled if run.preset == "main-350m"]
-    assert [run.time_budget_hours for run in proxies] == [1.5, 1.5, 1.5]
-    assert len(main) == 1 and main[0].time_budget_hours == 14.0
+    assert "350M 70% main pretraining: 7.5 hours" in normalized_profile
+    assert "tool SFT: 7.5 hours" in normalized_profile
+    assert "search RL: 7.5 hours" in normalized_profile
+    assert "2.5B-token cap" in normalized_profile
+    assert "proxy ablations" in normalized_profile
+    normalized_runbook = " ".join(runbook.split())
+    assert "./train-ssh rl" in normalized_runbook
+    assert "revision-pinned `Qwen/Qwen3.5-2B`" in normalized_runbook
 
 
 def test_rl_evaluation_and_safety_docs_require_held_out_regression_gates() -> None:

@@ -156,7 +156,7 @@ def test_slurm_template_documentation_commands_and_outputs_are_accurate() -> Non
     guide = (ROOT / "docs" / "SSH_TRAINING.md").read_text()
     combined = readme + guide
 
-    assert "`scripts/slurm/submit_8h_pipeline.sh`" in readme
+    assert "scripts/slurm/submit_8h_pipeline.sh" in readme
     for command in (
         "chmod +x scripts/slurm/train_h100.sbatch",
         "scripts/slurm/submit_8h_pipeline.sh",

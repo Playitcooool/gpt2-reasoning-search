@@ -4,7 +4,7 @@ This workflow is for a single H100 reached through SSH, including school cluster
 survive disconnects. It needs no administrator access. Long direct-server runs use `tmux` when it is
 available and fall back to `nohup`; Slurm clusters can submit the same stages with `sbatch`.
 
-## Three-command start
+## Slurm start (recommended)
 
 ```bash
 git clone git@github.com:Playitcooool/gpt2-reasoning-search.git
@@ -16,21 +16,33 @@ Edit `config/ssh.env` only for school Slurm resources (`SLURM_ACCOUNT`, `SLURM_T
 `SLURM_PARTITION`/`SLURM_GRES`). Cache and data paths are selected automatically. Then:
 
 ```bash
-./train-ssh doctor
-./train-ssh prepare       # do this before reserving the GPU when possible
-./train-ssh pretrain      # wait for completion, then run SFT and RL
+scripts/slurm/submit_8h_pipeline.sh
+squeue -u "$USER"
+./train-ssh status
 ```
 
-The default profile is sized for an eight-hour GPU reservation. Prepare artifacts before reserving
-the GPU when possible; run `pretrain`, then `sft`, then `rl` as each stage completes. It skips proxy
-ablations by default because they cannot fit in eight hours. Each stage survives an SSH disconnect.
-Follow progress from a new login:
+The wrapper prepares the data before submitting the GPU jobs, then submits pretrain -> SFT -> RL with
+`afterok` dependencies and passes the configured account, GPU, memory, CPU, and wall-time settings
+to `sbatch`. Each stage receives an eight-hour reservation and trains for 7.5 hours,
+leaving margin for startup and checkpoint finalization. It skips proxy ablations by default.
+
+## Direct SSH start (without Slurm)
+
+Use this mode only when the H100 is already allocated to your shell:
 
 ```bash
-cd gpt2-reasoning-search
+./train-ssh doctor
+./train-ssh prepare
+./train-ssh pretrain
+./train-ssh sft
+./train-ssh rl
+```
+
+Each stage survives disconnects through `tmux` or `nohup`. Follow progress from a new login:
+
+```bash
 ./train-ssh status
 ./train-ssh logs pretrain
-# Or interact with the tmux job:
 ./train-ssh attach pretrain
 ```
 
@@ -48,9 +60,9 @@ Run it on a networked login/preprocessing node before reserving the GPU. If comp
 access the internet, copy the resulting `artifacts/`, `data/raw/`, `data/processed/`, and
 `artifacts/wiki-index/` directories with hash-preserving tooling; no path edits are required.
 
-Because `prepare` launches in the background, wait for `./train-ssh logs prepare` to report
-completion before launching another stage. A process lock prevents two preparation/training stages
-from corrupting the same outputs.
+In direct SSH mode, `prepare` launches in the background; wait for `./train-ssh logs prepare` to
+report completion before launching another stage. The Slurm wrapper waits for preparation itself. A
+process lock prevents two preparation/training stages from corrupting the same outputs.
 
 ## Run one stage at a time
 
@@ -80,30 +92,15 @@ For a quick pipeline rehearsal, lower `REASONING_TOKEN_CAP`, `GENERAL_TOKEN_CAP`
 `MAIN_TOKEN_CAP`, and the time budgets in `config/ssh.env`. Do not compare that rehearsal with the
 full experiment.
 
-## Slurm school cluster
+## Slurm retries and logs
 
-Ask the administrator for the correct partition, account, memory, and GPU resource syntax, then set
-the `SLURM_*` values in `config/ssh.env`:
-
-```bash
-scripts/slurm/submit_8h_pipeline.sh
-squeue -u "$USER"
-./train-ssh status
-```
-
-The pipeline wrapper runs the same idempotent `prepare` stage before submitting any GPU job, so a
-fresh checkout does not require manual data-path setup. If preparation is already complete, it
-returns quickly and reuses the existing artifacts.
-
-If you prefer a normal editable `sbatch` file, use the included template. Edit its `#SBATCH` lines
-for your partition/account before submitting; these scheduler directives must be present when Slurm
-accepts the job and cannot be read later from `config/ssh.env`.
+The batch template is useful for a prepared single-stage retry. Its `#SBATCH` directives are read by
+Slurm before the worker starts, so edit those lines only when the school requires scheduler values
+that cannot be supplied through `config/ssh.env`.
 
 ```bash
 chmod +x scripts/slurm/train_h100.sbatch
-# Submit all GPU stages as separate dependent jobs:
-scripts/slurm/submit_8h_pipeline.sh
-# Or submit/retry one stage:
+# The normal pipeline is the wrapper above. Use this only for a prepared retry:
 sbatch scripts/slurm/train_h100.sbatch pretrain
 ```
 

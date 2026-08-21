@@ -89,6 +89,20 @@ def test_pipeline_submits_three_independent_eight_hour_jobs_with_afterok_depende
     tmp_path: Path,
 ) -> None:
     project, config = _copy_project(tmp_path)
+    config.write_text(
+        "\n".join(
+            (
+                "SESSION_PREFIX=school-grs",
+                "SLURM_ACCOUNT=class-account",
+                "SLURM_PARTITION=gpu-school",
+                "SLURM_GRES=gpu:h100:1",
+                "SLURM_CPUS=8",
+                "SLURM_MEMORY=64G",
+                "SLURM_TIME=08:00:00",
+            )
+        )
+        + "\n"
+    )
     calls = tmp_path / "calls.log"
     counter = tmp_path / "counter"
     fake_bin = _fake_path(
@@ -121,6 +135,14 @@ def test_pipeline_submits_three_independent_eight_hour_jobs_with_afterok_depende
     assert all("ARG <--parsable>" in group for group in groups)
     assert all(f"ARG <--export=ALL,SSH_TRAIN_CONFIG={config}>" in group for group in groups)
     assert all(f"ARG <{batch}>" in group for group in groups)
+    for stage, group in zip(("pretrain", "sft", "rl"), groups, strict=True):
+        assert f"ARG <--job-name=school-grs-{stage}>" in group
+        assert "ARG <--account=class-account>" in group
+        assert "ARG <--partition=gpu-school>" in group
+        assert "ARG <--gres=gpu:h100:1>" in group
+        assert "ARG <--cpus-per-task=8>" in group
+        assert "ARG <--mem=64G>" in group
+        assert "ARG <--time=08:00:00>" in group
     assert "ARG <pretrain>" in groups[0]
     assert "--dependency" not in groups[0]
     assert "ARG <--dependency=afterok:101>" in groups[1]

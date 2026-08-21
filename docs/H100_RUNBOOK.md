@@ -1,92 +1,61 @@
 # One-H100 runbook
 
-## Before the timed run
+## Start the pipeline
 
-Clone the repository onto fast local storage and install the locked environment:
+Use the repository launcher. It installs the locked environment, prepares the pinned data, and
+submits three separate eight-hour jobs. Edit only the scheduler settings in `config/ssh.env`.
 
 ```bash
 git clone git@github.com:Playitcooool/gpt2-reasoning-search.git
 cd gpt2-reasoning-search
-uv sync --dev --locked
-uv run python -c "import torch; print(torch.cuda.get_device_name(), torch.cuda.is_bf16_supported())"
-```
-
-Confirm an H100-class CUDA device, bf16 support, enough local capacity for datasets/checkpoints, and
-the expected revisions in `config/datasets.json`. Prepare tokenizer, token arrays, contamination
-prompts, and Wikipedia index before the GPU window when possible. Copy these artifacts with
-hash-preserving tooling and compare their manifests after transfer.
-
-Run `smoke-overfit` before spending the main budget. Keep the 0/30/70 proxy token budgets equal.
-
-## Original 24-hour allocation
-
-- Throughput calibration and smoke gates: 0.5 hour.
-- Three equal-budget 124M proxies: 4.5 hours total.
-- 350M 70% main pretraining: up to 14 hours.
-- Tool SFT: 1.5 hours.
-- Search RL: 2 hours.
-- Held-out evaluation and buffer: 1.5 hours.
-
-The trainer measures steady-state throughput after compile warmup and reduces the main token cap to
-fit the configured wall-clock window. The 2.5B cap is a maximum, not a promise that one H100 can
-consume it in a day.
-
-## Eight-hour reservation
-
-The SSH/Slurm profile is sized for an eight-hour reservation. It deliberately omits the proxy
-ablations and uses a shortened main run:
-
-- preparation: before the GPU reservation, on a networked login/preprocessing node;
-- smoke gate: a few minutes;
-- 350M 70% main pretraining: 7.5 hours, up to a 2.5B-token cap;
-- tool SFT: 7.5 hours in one separate eight-hour reservation;
-- search RL: 7.5 hours in one separate eight-hour reservation (with the Qwen judge enabled by
-  default).
-
-Prepare the artifacts first, then submit the batch job:
-
-```bash
-./train-ssh prepare
+./train-ssh setup
+# Set SLURM_ACCOUNT, SLURM_TIME, and any required SLURM_PARTITION/SLURM_GRES.
 scripts/slurm/submit_8h_pipeline.sh
+squeue -u "$USER"
 ```
 
-This submits independent eight-hour pretrain, SFT, and RL jobs with `afterok` dependencies. Each
-worker stops at 7.5 hours and writes a resumable checkpoint before the Slurm walltime. It cannot
-support the original three-proxy comparison. Run
-`sbatch scripts/slurm/train_h100.sbatch proxies` in a separate reservation if those controls are
-required. If a stage is interrupted, cancel the old chain's pending dependents and rerun the
-wrapper; complete stages are skipped and the interrupted stage resumes automatically.
+The wrapper runs `doctor` separately when a batch job starts and runs data preparation before
+submitting the GPU jobs. It selects the fixed repository paths; no manual data-file setup is
+required.
+
+## Eight-hour stage profile
+
+The default profile deliberately omits proxy ablations. Each stage leaves approximately 30 minutes
+for scheduler startup and checkpoint finalization:
+
+- 350M 70% main pretraining: 7.5 hours, up to a 2.5B-token cap;
+- tool SFT: 7.5 hours;
+- search RL: 7.5 hours, with the revision-pinned Qwen/Qwen3.5-2B judge enabled by default.
+
+The trainer calibrates throughput and reduces the effective token cap if needed. A cap is a maximum,
+not a promise that every reservation consumes it.
+
+The optional equal-budget 0%/30%/70% proxy study requires separate reservations. Preserve those
+results separately from the default pipeline.
 
 ## Resume and monitoring
 
 Metrics are appended to `metrics.jsonl`. Watch loss, gradient norm, learning rate, tokens/second,
 MFU estimate, peak memory, reasoning/general token counters, and the calibrated final token budget.
-Resume only from a complete checkpoint directory:
+Direct single-stage retries use the batch template and resume from the newest complete checkpoint:
 
 ```bash
-uv run gpt2-reasoning-search pretrain \
-  --reasoning-tokens data/processed/reasoning.bin \
-  --general-tokens data/processed/general.bin \
-  --output checkpoints/main-350m \
-  --resume-from checkpoints/main-350m/step-00001000
+sbatch scripts/slurm/train_h100.sbatch pretrain
 ```
 
-Do not combine metrics from runs with different tokenizer hashes, data hashes, model configuration,
-or token budgets. Preserve failed or neutral results; do not relabel a shorter run as the planned
-2.5B-token experiment.
+If a stage reaches its walltime, cancel pending dependent jobs and rerun
+`scripts/slurm/submit_8h_pipeline.sh`. Completed stages are skipped, and the incomplete stage
+resumes automatically. Do not combine metrics from runs with different tokenizer hashes, data
+hashes, model configuration, or token budgets.
 
 ## Serving after training
 
-Build the index, run tool SFT, then run grouped local-search RL:
+After the main checkpoint completes, the dependent SFT and RL jobs run automatically. For a direct
+server, use:
 
 ```bash
-uv run gpt2-reasoning-search rl-search \
-  --checkpoint checkpoints/tool-sft \
-  --tokenizer-path artifacts/tokenizer.json \
-  --prompts data/rl/search-qa.jsonl \
-  --index artifacts/wiki-index \
-  --output checkpoints/search-rl --epochs 8 --group-size 4 --time-budget-hours 7.5 \
-  --llm-judge --judge-device cuda
+./train-ssh sft
+./train-ssh rl
 ```
 
 The default auxiliary judge is revision-pinned `Qwen/Qwen3.5-2B`, run greedily with a 4,096-token

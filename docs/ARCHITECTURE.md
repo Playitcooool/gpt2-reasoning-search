@@ -2,7 +2,9 @@
 
 ## Training path
 
-1. The tokenizer reserves explicit problem, reasoning, answer, tool-call, tool-result, citation,
+1. The SSH `prepare` stage runs the pinned data bootstrap, tokenizer training, corpus preparation,
+   Wikipedia index build, and trajectory generation at fixed repository paths. The tokenizer
+   reserves explicit problem, reasoning, answer, tool-call, tool-result, citation,
    padding, and end-of-sequence tokens.
 2. Pinned Hugging Face sources are streamed through source allowlists, structural quality checks,
    upstream-verification gates, optional deterministic local checks when references/tests are

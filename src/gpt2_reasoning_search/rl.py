@@ -26,7 +26,7 @@ from .judge import JudgeScore, QwenRewardJudge
 from .model import GPT2ReasoningModel
 from .retrieval import LocalWikipediaSearchProvider
 from .schemas import AnswerRequest, AnswerResponse
-from .train import optimizer_parameter_groups
+from .train import optimizer_parameter_groups, warmup_cosine_factor
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,13 +329,6 @@ def segment_policy_loss(
     return loss, kl.detach().mean()
 
 
-def _learning_rate_factor(step: int, total_steps: int, warmup_steps: int) -> float:
-    if step < warmup_steps:
-        return (step + 1) / max(1, warmup_steps)
-    progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
-    return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
-
-
 def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None = None) -> Path:
     reward_weights = reward_weights or RewardWeights()
     if not torch.cuda.is_available():
@@ -375,7 +368,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
     warmup_steps = round(total_steps * config.warmup_fraction)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda step: _learning_rate_factor(step, total_steps, warmup_steps),
+        lambda step: warmup_cosine_factor(step, total_steps, warmup_steps),
     )
     step = start_epoch = prompt_cursor = rollouts_seen = action_tokens_seen = 0
     if config.resume_from is not None:

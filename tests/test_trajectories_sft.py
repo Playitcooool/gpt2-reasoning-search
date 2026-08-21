@@ -7,7 +7,6 @@ import torch
 
 from gpt2_reasoning_search.schemas import SearchResult
 from gpt2_reasoning_search.sft import (
-    _learning_rate_factor,
     _shuffle_buffer,
     _trajectory_texts,
     collate_sft_batch,
@@ -15,6 +14,7 @@ from gpt2_reasoning_search.sft import (
     fine_tune_tools,
 )
 from gpt2_reasoning_search.tokenizer import train_tokenizer
+from gpt2_reasoning_search.train import warmup_cosine_factor
 from gpt2_reasoning_search.trajectories import (
     generate_trajectories,
     multi_step_trajectory_document,
@@ -194,11 +194,11 @@ def test_sft_shuffle_is_deterministic_and_preserves_all_values() -> None:
 
 
 def test_sft_learning_rate_warmup_cosine_decay() -> None:
-    assert _learning_rate_factor(0, total_steps=100, warmup_steps=10) == pytest.approx(0.1)
-    assert _learning_rate_factor(9, total_steps=100, warmup_steps=10) == pytest.approx(1.0)
-    assert _learning_rate_factor(10, total_steps=100, warmup_steps=10) == pytest.approx(1.0)
-    assert _learning_rate_factor(55, total_steps=100, warmup_steps=10) == pytest.approx(0.55)
-    assert _learning_rate_factor(100, total_steps=100, warmup_steps=10) == pytest.approx(0.1)
+    assert warmup_cosine_factor(0, total_steps=100, warmup_steps=10) == pytest.approx(0.1)
+    assert warmup_cosine_factor(9, total_steps=100, warmup_steps=10) == pytest.approx(1.0)
+    assert warmup_cosine_factor(10, total_steps=100, warmup_steps=10) == pytest.approx(1.0)
+    assert warmup_cosine_factor(55, total_steps=100, warmup_steps=10) == pytest.approx(0.55)
+    assert warmup_cosine_factor(100, total_steps=100, warmup_steps=10) == pytest.approx(0.1)
 
 
 def test_sft_trajectory_validation_reports_bad_rows(tmp_path: Path) -> None:

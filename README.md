@@ -40,112 +40,54 @@ For a remote H100, the shortest path is:
 ./train-ssh setup
 # Edit only SLURM_ACCOUNT, SLURM_TIME, and (if required) SLURM_PARTITION/SLURM_GRES.
 # Cache and data paths are automatic.
-./train-ssh doctor
-# This creates all data and retrieval inputs automatically at the fixed paths.
-./train-ssh prepare
-./train-ssh pretrain
+# This prepares data, then submits pretrain -> SFT -> RL as dependent eight-hour jobs.
+scripts/slurm/submit_8h_pipeline.sh
 ./train-ssh status
 ```
 
-The default profile is sized for an eight-hour GPU reservation: prepare large artifacts before the
-GPU job when possible, then run pretrain, SFT, and RL as separate stages. Proxy ablations are
-disabled by default. Each stage trains for about 7.5 hours, leaving a short startup/checkpoint
-margin; the main run can consume up to 2.5B tokens. Long stages survive disconnects through tmux or
-nohup, automatically resume complete checkpoints, and can also be submitted with
-`scripts/slurm/submit_8h_pipeline.sh`; that wrapper prepares data first and submits pretrain → SFT →
-RL as dependent jobs. See the
-[SSH training guide](docs/SSH_TRAINING.md).
+The default profile is sized for an eight-hour GPU reservation. Preparation runs before GPU jobs,
+then pretraining, tool SFT, and search RL each get a separate 7.5-hour training budget. Checkpoints
+are resumable and proxy ablations are disabled by default. See the [SSH training guide](docs/SSH_TRAINING.md).
 
-## Training pipeline
-
-Preprocessing is intentionally separate from the timed H100 window.
+For a direct server without Slurm, use the same worker one stage at a time:
 
 ```bash
-# The SSH workflow runs this automatically; it creates tokenizer samples, Wikipedia JSONL,
-# grounded questions, and search-RL prompts at the fixed data paths.
-uv run gpt2-reasoning-search bootstrap-data
+./train-ssh doctor
+./train-ssh prepare
+./train-ssh pretrain
+./train-ssh sft
+./train-ssh rl
+```
 
-# Train the 50K BPE tokenizer from the generated reasoning and education samples.
-uv run gpt2-reasoning-search train-tokenizer data/tokenizer-sample/*.txt \
-  --output artifacts/tokenizer.json --vocab-size 50304
+## Data and training pipeline
 
-# Stream pinned Hugging Face revisions, filter/deduplicate, and write memory-mapped arrays.
-uv run gpt2-reasoning-search prepare-data \
-  --tokenizer-path artifacts/tokenizer.json \
-  --manifest config/datasets.json \
-  --output data/processed \
-  --evaluation-prompts data/evaluation/contamination-prompts.jsonl \
-  --reasoning-token-cap 2000000000 \
-  --general-token-cap 1000000000
+`prepare` is the only data command you need. It idempotently runs the pinned bootstrap, tokenizer
+training, 70/30 corpus preparation, local Wikipedia index build, and tool-trajectory generation.
+It writes `data/processed/reasoning.bin`, `data/processed/general.bin`, `artifacts/tokenizer.json`,
+`artifacts/wiki-index`, and `data/processed/tool-trajectories.jsonl`.
 
-# Verify the small-model learning gate and write the one-H100 experiment schedule.
-uv run gpt2-reasoning-search smoke-overfit --device cpu
-uv run gpt2-reasoning-search experiment-plan
-
-# Main calibrated run. Use step-* or final as --resume-from after interruption.
-uv run gpt2-reasoning-search pretrain \
-  --reasoning-tokens data/processed/reasoning.bin \
-  --general-tokens data/processed/general.bin \
-  --output checkpoints/main-350m \
-  --preset main-350m --reasoning-ratio 0.70 --max-tokens 2500000000 \
-  --time-budget-hours 7.5
+```bash
+./train-ssh prepare
 ```
 
 Each `.bin` has a manifest containing dtype, token count, hashes, source counts, verification counts,
 and rejection statistics. Training checkpoints include model, optimizer, scheduler, RNG, exact data
 cursors, and mixture counters.
 
-Run the matched proxies with `--preset proxy-124m` and reasoning ratios `0`, `0.3`, and `0.7`, then:
-
-```bash
-uv run gpt2-reasoning-search compare-proxies \
-  checkpoints/proxy-r0 checkpoints/proxy-r30 checkpoints/proxy-r70
-```
-
-## Search and tool fine-tuning
-
-Wikipedia JSONL rows require `id`, `title`, `url`, and `text`.
-
-```bash
-# Default: Tantivy BM25 + SentenceTransformer embeddings + USearch HNSW.
-uv run gpt2-reasoning-search build-index data/raw/wikipedia.jsonl \
-  --output artifacts/wiki-index
-
-# Or build a deterministic BM25-only index without model downloads.
-uv run gpt2-reasoning-search build-index data/raw/wikipedia.jsonl \
-  --output artifacts/wiki-index-lexical --lexical-only
-
-uv run gpt2-reasoning-search make-trajectories \
-  data/raw/grounded-questions.jsonl \
-  --output data/processed/tool-trajectories.jsonl
-
-uv run gpt2-reasoning-search sft-tools \
-  --checkpoint checkpoints/main-350m/final \
-  --tokenizer-path artifacts/tokenizer.json \
-  --trajectories data/processed/tool-trajectories.jsonl \
-  --output checkpoints/tool-sft --epochs 4 --time-budget-hours 7.5
-
-# Optimize answer, citation, and search behavior against the frozen local index.
-uv run gpt2-reasoning-search rl-search \
-  --checkpoint checkpoints/tool-sft \
-  --tokenizer-path artifacts/tokenizer.json \
-  --prompts data/rl/search-qa.jsonl \
-  --index artifacts/wiki-index \
-  --output checkpoints/search-rl --epochs 8 --group-size 4 --time-budget-hours 7.5 \
-  --llm-judge --judge-device cuda
-```
-
-Trajectory rows may use the simple `query` + `evidence` form, omit `query` for no-search examples,
-or provide `searches`, an array of up to three `{query, evidence}` objects for multi-hop query
-reformulation. Retrieved observations and prompts are masked from loss; tool calls, generated
-reasoning, answers, and citations are trained.
+The worker invokes tokenizer training, pretraining, `sft-tools`, and `rl-search` internally. Search
+RL uses the local index only, the Qwen3.5-2B judge by default, and at most three searches per
+rollout. Set `USE_LLM_JUDGE=0` for the deterministic ablation. Detailed JSONL schemas and advanced
+CLI equivalents are in [the search-RL guide](docs/SEARCH_RL.md).
 
 Search RL is a distinct third stage. It samples groups of online tool trajectories, scores
 verifiable QA outcomes and grounded tool behavior, optimizes only model-generated action tokens,
 and regularizes against a frozen copy of the tool-SFT checkpoint. RL uses local search only; its
 tokens do not alter the audited 70/30 pretraining ratio. See [search RL](docs/SEARCH_RL.md).
 The CLI also uses a revision-pinned Qwen3.5-2B auxiliary judge by default. Deterministic answer,
-citation, and tool checks remain the primary reward; use `--no-llm-judge` for the ablation.
+citation, and tool checks remain the primary reward; use `USE_LLM_JUDGE=0` for the ablation.
+
+The optional 0%/30%/70% proxy comparison is not part of the eight-hour pipeline. Run it only with
+a separate reservation; `experiment-plan` and `compare-proxies` are diagnostics for that study.
 
 ## Serving
 

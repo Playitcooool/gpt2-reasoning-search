@@ -399,14 +399,15 @@ def test_documented_release_commands_and_formats_match_cli() -> None:
     readme = (root / "README.md").read_text()
     data = (root / "docs" / "DATA.md").read_text()
     evaluation = (root / "docs" / "EVALUATION.md").read_text()
+    architecture = (root / "docs" / "ARCHITECTURE.md").read_text()
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text()
 
     assert ".npy" not in readme
     assert ".npy" not in data
     assert "reasoning.bin" in readme and "general.bin" in readme
     assert "BM25+dense HNSW" in readme
-    assert "Default: Tantivy BM25 + SentenceTransformer" in readme
-    assert "--output artifacts/wiki-index-lexical --lexical-only" in " ".join(readme.split())
+    assert "Tantivy BM25 + SentenceTransformer" in architecture
+    assert "lexical-only build is available" in architecture
     assert "score-lm" in readme
     assert "benchmark-grounded" in readme
     assert "Recall/MRR/nDCG" in evaluation

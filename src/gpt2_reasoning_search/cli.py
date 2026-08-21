@@ -303,7 +303,7 @@ def serve_command(
 def experiment_plan_command(
     output: Path = typer.Option(Path("artifacts/one-h100-plan.json")),
 ) -> None:
-    """Write the fixed proxy-and-main schedule for one H100 day."""
+    """Write the optional proxy-ablation schedule; it is not the default eight-hour pipeline."""
     write_experiment_plan(output)
     typer.echo(str(output))
 

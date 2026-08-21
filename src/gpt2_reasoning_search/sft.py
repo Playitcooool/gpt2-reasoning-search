@@ -15,7 +15,7 @@ from tokenizers import Tokenizer
 from .checkpoint import load_checkpoint, load_model_weights, save_checkpoint
 from .config import ModelConfig
 from .model import GPT2ReasoningModel
-from .train import optimizer_parameter_groups
+from .train import optimizer_parameter_groups, warmup_cosine_factor
 
 
 def encode_sft_document(
@@ -81,13 +81,6 @@ def _shuffle_buffer(values: Iterable[str], buffer_size: int, rng: random.Random)
     yield from buffer
 
 
-def _learning_rate_factor(step: int, total_steps: int, warmup_steps: int) -> float:
-    if step < warmup_steps:
-        return (step + 1) / max(1, warmup_steps)
-    progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
-    return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
-
-
 def fine_tune_tools(
     checkpoint_directory: Path,
     tokenizer_path: Path,
@@ -144,7 +137,7 @@ def fine_tune_tools(
     warmup_steps = round(total_steps * warmup_fraction)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda step: _learning_rate_factor(step, total_steps, warmup_steps),
+        lambda step: warmup_cosine_factor(step, total_steps, warmup_steps),
     )
     start_epoch = start_cursor = step = 0
     if resume_from is not None:

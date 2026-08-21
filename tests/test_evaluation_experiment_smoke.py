@@ -206,15 +206,19 @@ def test_readme_documents_complete_pipeline_and_generated_reasoning_warning() ->
     root = Path(__file__).resolve().parents[1]
     readme = (root / "README.md").read_text()
     data_guide = (root / "docs" / "DATA.md").read_text()
+    ssh_guide = (root / "docs" / "SSH_TRAINING.md").read_text()
 
     for command in (
         "experiment-plan",
-        "smoke-overfit",
         "score-reasoning",
         "score-grounded",
         "compare-proxies",
     ):
         assert command in readme
+    # The public SSH wrapper exposes the small overfit gate as ``smoke``; the
+    # raw ``smoke-overfit`` CLI name remains an implementation detail.
+    assert "./train-ssh smoke" in ssh_guide
+    assert "diagnostics" in readme
     assert "not a faithful description" in " ".join(readme.split())
     assert "full commit hash" in data_guide
     assert "Common Crawl obligations" in data_guide

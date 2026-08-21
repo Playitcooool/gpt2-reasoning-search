@@ -20,8 +20,9 @@ reruns the corresponding deterministic local check; otherwise it records the ups
 category explicitly. These checks improve data quality but do not prove every accepted trace correct.
 
 The general stream comes from the pinned FineWeb-Edu sample and remains subject to ODC-By 1.0
-attribution and Common Crawl obligations. Minimum education score, language, length, and printable
-character filters are recorded in rejection counters.
+attribution and Common Crawl obligations. Length, printable-character, alphanumeric, and repetitive
+line filters always apply; language and education-score thresholds apply when the upstream row
+provides those metadata fields. All decisions are recorded in rejection counters.
 
 Evaluation prompts must be collected before training-corpus filtering. Exact hashes and eight-word
 overlap filtering remove known benchmark copies. Disk-backed exact hash deduplication prevents RAM

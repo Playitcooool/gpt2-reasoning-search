@@ -18,7 +18,7 @@ class ScheduledRun:
 
 
 def one_h100_schedule() -> list[ScheduledRun]:
-    """Schedule the 18.5 hours assigned to proxy and main pretraining."""
+    """Schedule the optional one-day proxy and main-pretraining ablation."""
     proxy_cap = 150_000_000
     return [
         ScheduledRun("proxy-r0", "proxy-124m", 0.0, proxy_cap, 1.5),
