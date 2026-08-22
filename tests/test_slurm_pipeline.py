@@ -128,6 +128,7 @@ def test_explicit_stage_scripts_delegate_to_common_runner_and_have_resources(
     for stage in STAGES:
         text = (ROOT / "scripts" / "slurm" / f"{stage}.sbatch").read_text()
         assert text.count('run_stage.sh"') == 1
+        assert "--gres" not in text
         assert f"--job-name=grs-{stage}" in text
         assert "#SBATCH --cpus-per-task=" in text
         assert "#SBATCH --mem=" in text
@@ -135,9 +136,9 @@ def test_explicit_stage_scripts_delegate_to_common_runner_and_have_resources(
         assert "#SBATCH --output=logs/slurm-%x-%j.out" in text
         assert "#SBATCH --error=logs/slurm-%x-%j.err" in text
         if stage == "prepare":
-            assert "#SBATCH --gres=" not in text
+            assert "#SBATCH --gpus=" not in text
         else:
-            assert "#SBATCH --gres=gpu:1" in text
+            assert "#SBATCH --gpus=h100" in text
 
 
 def test_common_runner_delegates_config_and_doctor_for_gpu_stages(tmp_path: Path) -> None:
@@ -211,7 +212,7 @@ def test_pipeline_submits_three_independent_eight_hour_jobs_with_afterok_depende
                 "SESSION_PREFIX=school-grs",
                 "SLURM_ACCOUNT=class-account",
                 "SLURM_PARTITION=gpu-school",
-                "SLURM_GRES=gpu:h100:1",
+                "SLURM_GPUS=h100",
                 "SLURM_CPUS=8",
                 "SLURM_MEMORY=64G",
                 "SLURM_TIME=08:00:00",
@@ -258,7 +259,7 @@ def test_pipeline_submits_three_independent_eight_hour_jobs_with_afterok_depende
         assert f"ARG <--job-name=school-grs-{stage}>" in group
         assert "ARG <--account=class-account>" in group
         assert "ARG <--partition=gpu-school>" in group
-        assert "ARG <--gres=gpu:h100:1>" in group
+        assert "ARG <--gpus=h100>" in group
         assert "ARG <--cpus-per-task=8>" in group
         assert "ARG <--mem=64G>" in group
         assert "ARG <--time=08:00:00>" in group
@@ -359,7 +360,7 @@ def test_submit_stage_applies_config_resources_and_dependency_safely(tmp_path: P
                 "SESSION_PREFIX=school-grs",
                 "SLURM_ACCOUNT=class-account",
                 "SLURM_PARTITION=gpu-school",
-                "SLURM_GRES=gpu:h100:1",
+                "SLURM_GPUS=h100",
                 "SLURM_CPUS=12",
                 "SLURM_MEMORY=96G",
                 "SLURM_TIME=07:30:00",
@@ -401,7 +402,7 @@ def test_submit_stage_applies_config_resources_and_dependency_safely(tmp_path: P
     assert "ARG <--time=07:30:00>" in prepare_call
     assert "ARG <--account=class-account>" in prepare_call
     assert "ARG <--partition=gpu-school>" in prepare_call
-    assert "ARG <--gres=" not in prepare_call
+    assert "ARG <--gpus=" not in prepare_call
     assert f"ARG <--export=ALL,SSH_TRAIN_CONFIG={config}>" in prepare_call
     assert f"ARG <{project / 'scripts' / 'slurm' / 'prepare.sbatch'}>" in prepare_call
 
@@ -416,7 +417,7 @@ def test_submit_stage_applies_config_resources_and_dependency_safely(tmp_path: P
     )
     assert pretrain.returncode == 0, pretrain.stderr
     pretrain_call = calls.read_text().split("CALL\n")[2]
-    assert "ARG <--gres=gpu:h100:1>" in pretrain_call
+    assert "ARG <--gpus=h100>" in pretrain_call
     assert "ARG <--dependency=afterok:918>" in pretrain_call
     assert f"ARG <{project / 'scripts' / 'slurm' / 'pretrain.sbatch'}>" in pretrain_call
     assert pretrain.stdout.strip() == "918"
@@ -444,6 +445,39 @@ def test_submit_stage_rejects_unknown_stage_before_scheduler_call(tmp_path: Path
     assert not calls.exists()
 
 
+def test_submit_stage_ignores_legacy_slurm_gres_and_defaults_to_h100_gpus(
+    tmp_path: Path,
+) -> None:
+    project, config = _copy_project(tmp_path)
+    config.write_text("SESSION_PREFIX=legacy\nSLURM_GRES=gpu:h100:1\n")
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_path(
+        tmp_path,
+        '{ echo CALL; printf "ARG <%s>\\n" "$@"; } >> "$FAKE_CALLS"\necho 456\n',
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {"PATH": str(fake_bin), "SSH_TRAIN_CONFIG": str(config), "FAKE_CALLS": str(calls)}
+    )
+
+    result = subprocess.run(
+        [str(project / "scripts" / "slurm" / STAGE_SUBMITTER.name), "pretrain"],
+        cwd=project.parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    log = calls.read_text()
+    assert "ARG <--gpus=h100>" in log
+    assert "--gres" not in log
+    assert "gpu:h100:1" not in log
+    assert result.stdout.strip() == "456"
+
+
 def test_pipeline_docs_use_direct_submitter_and_never_submit_combined_all() -> None:
     readme = (ROOT / "README.md").read_text()
     guide = (ROOT / "docs" / "SSH_TRAINING.md").read_text()
@@ -456,6 +490,11 @@ def test_pipeline_docs_use_direct_submitter_and_never_submit_combined_all() -> N
     assert "sbatch scripts/slurm/train_h100.sbatch all" not in readme + guide + batch
     assert all(f"{stage}.sbatch" in guide for stage in STAGES)
     assert "scripts/slurm/submit_stage.sh <stage>" in guide
+    assert "SLURM_GPUS" in readme + guide + setup
+    assert "--gpus" in guide
+    assert "SLURM_GRES" not in readme + guide + setup
+    assert "sbatch --gres" not in readme + guide + setup
+    assert "not converted into a `--gres` request" in guide
     assert 'STAGE="${1:-pretrain}"' in batch
     assert "dependent jobs" in guide
     assert "Each stage receives an eight-hour reservation" in guide

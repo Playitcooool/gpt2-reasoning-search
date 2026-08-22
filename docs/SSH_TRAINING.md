@@ -13,13 +13,16 @@ cd gpt2-reasoning-search
 ```
 
 Edit `config/ssh.env` only for school Slurm resources (`SLURM_ACCOUNT`, `SLURM_TIME`, and, if needed,
-`SLURM_PARTITION`/`SLURM_GRES`). Cache and data paths are selected automatically. Then:
+`SLURM_PARTITION`/`SLURM_GPUS`). Cache and data paths are selected automatically. Then:
 
 ```bash
 scripts/slurm/submit_8h_pipeline.sh
 squeue -u "$USER"
 ./train-ssh status
 ```
+
+`SLURM_GPUS="h100"` becomes `sbatch --gpus=h100`, matching clusters that use the modern Slurm GPU
+syntax. It is intentionally not converted into a `--gres` request.
 
 The wrapper prepares the data before submitting the GPU jobs, then submits pretrain -> SFT -> RL with
 `afterok` dependencies and passes the configured account, GPU, memory, CPU, and wall-time settings

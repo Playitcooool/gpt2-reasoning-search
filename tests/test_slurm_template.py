@@ -52,7 +52,7 @@ def test_slurm_template_has_portable_resources_and_log_paths() -> None:
 
     assert directives == [
         "#SBATCH --job-name=grs-train",
-        "#SBATCH --gres=gpu:1",
+        "#SBATCH --gpus=h100",
         "#SBATCH --cpus-per-task=16",
         "#SBATCH --mem=128G",
         "#SBATCH --time=08:00:00",

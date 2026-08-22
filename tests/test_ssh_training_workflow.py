@@ -91,7 +91,7 @@ def _write_config(project: Path, tmp_path: Path, **overrides: object) -> Path:
         "USE_LLM_JUDGE": 0,
         "SLURM_PARTITION": "gpu-school",
         "SLURM_ACCOUNT": "class-account",
-        "SLURM_GRES": "gpu:h100:1",
+        "SLURM_GPUS": "h100",
         "SLURM_CPUS": 8,
         "SLURM_MEMORY": "64G",
         "SLURM_TIME": "08:00:00",
@@ -909,7 +909,7 @@ def test_config_is_ignored_and_documented_commands_match_launcher() -> None:
         "GENERAL_TOKENS",
         "MAIN_HOURS",
         "RL_OUTPUT",
-        "SLURM_GRES",
+        "SLURM_GPUS",
         "SLURM_TIME",
     ):
         assert f"{variable}=" in example

@@ -9,10 +9,12 @@ submits three separate eight-hour jobs. Edit only the scheduler settings in `con
 git clone git@github.com:Playitcooool/gpt2-reasoning-search.git
 cd gpt2-reasoning-search
 ./train-ssh setup
-# Set SLURM_ACCOUNT, SLURM_TIME, and any required SLURM_PARTITION/SLURM_GRES.
+# Set SLURM_ACCOUNT, SLURM_TIME, and any required SLURM_PARTITION/SLURM_GPUS.
 scripts/slurm/submit_8h_pipeline.sh
 squeue -u "$USER"
 ```
+
+The default `SLURM_GPUS="h100"` is passed to Slurm as `--gpus=h100`.
 
 The wrapper runs `doctor` separately when a batch job starts and runs data preparation before
 submitting the GPU jobs. It selects the fixed repository paths; no manual data-file setup is

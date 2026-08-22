@@ -5,7 +5,7 @@
 #   sbatch scripts/slurm/rl.sbatch
 
 #SBATCH --job-name=grs-train
-#SBATCH --gres=gpu:1
+#SBATCH --gpus=h100
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=08:00:00

@@ -40,7 +40,7 @@ args=(
   --export="ALL,SSH_TRAIN_CONFIG=$CONFIG_FILE"
 )
 if [[ "$STAGE" != "prepare" ]]; then
-  args+=(--gres="${SLURM_GRES:-gpu:1}")
+  args+=(--gpus="${SLURM_GPUS:-h100}")
 fi
 [[ -n "${SLURM_PARTITION:-}" ]] && args+=(--partition="$SLURM_PARTITION")
 [[ -n "${SLURM_ACCOUNT:-}" ]] && args+=(--account="$SLURM_ACCOUNT")

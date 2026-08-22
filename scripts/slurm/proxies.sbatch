@@ -3,7 +3,7 @@
 #   sbatch scripts/slurm/proxies.sbatch
 
 #SBATCH --job-name=grs-proxies
-#SBATCH --gres=gpu:1
+#SBATCH --gpus=h100
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=08:00:00

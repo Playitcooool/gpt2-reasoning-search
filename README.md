@@ -38,7 +38,7 @@ For a remote H100, the shortest path is:
 
 ```bash
 ./train-ssh setup
-# Edit only SLURM_ACCOUNT, SLURM_TIME, and (if required) SLURM_PARTITION/SLURM_GRES.
+# Edit only SLURM_ACCOUNT, SLURM_TIME, and (if required) SLURM_PARTITION/SLURM_GPUS.
 # Cache and data paths are automatic.
 # This prepares data, then submits pretrain -> SFT -> RL as dependent eight-hour jobs.
 scripts/slurm/submit_8h_pipeline.sh
