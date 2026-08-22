@@ -19,6 +19,6 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$PWD}"
 STAGE="${1:-pretrain}"
 exec "$PROJECT_ROOT/scripts/slurm/run_stage.sh" "$STAGE"

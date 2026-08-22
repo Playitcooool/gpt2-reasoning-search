@@ -95,6 +95,10 @@ def test_slurm_wrappers_are_executable_and_bash_3_syntax_compatible() -> None:
     assert result.returncode == 0, result.stderr
     assert "mapfile" not in SUBMITTER.read_text()
     assert "readarray" not in SUBMITTER.read_text()
+    for path in [ROOT / "scripts" / "slurm" / f"{stage}.sbatch" for stage in STAGES] + [BATCH]:
+        text = path.read_text()
+        assert "BASH_SOURCE" not in text
+        assert 'PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$PWD}"' in text
 
 
 def test_explicit_stage_scripts_delegate_to_common_runner_and_have_resources(
@@ -139,6 +143,67 @@ def test_explicit_stage_scripts_delegate_to_common_runner_and_have_resources(
             assert "#SBATCH --gpus=" not in text
         else:
             assert "#SBATCH --gpus=h100" in text
+
+
+def test_spooled_stage_scripts_resolve_project_from_slurm_submit_dir(tmp_path: Path) -> None:
+    project, config = _copy_project(tmp_path)
+    _write_executable(
+        project / "scripts" / "ssh" / "worker.sh",
+        'printf "CONFIG <%s>\\n" "${SSH_TRAIN_CONFIG:-}" >> "$FAKE_CALLS"\n'
+        'printf "ARG <%s>\\n" "$@" >> "$FAKE_CALLS"\n',
+    )
+    spool = tmp_path / "slurm spool"
+    spool.mkdir()
+    scripts = [
+        ROOT / "scripts" / "slurm" / f"{stage}.sbatch" for stage in STAGES
+    ] + [BATCH]
+    for source in scripts:
+        shutil.copy2(source, spool / source.name)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "nvidia-smi", "exit 0\n")
+    calls = tmp_path / "spool-calls.log"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
+            "SLURM_SUBMIT_DIR": str(project),
+            "SSH_TRAIN_CONFIG": str(config),
+            "FAKE_CALLS": str(calls),
+        }
+    )
+
+    for stage in STAGES:
+        calls.unlink(missing_ok=True)
+        result = subprocess.run(
+            [str(spool / f"{stage}.sbatch")],
+            cwd=spool,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, f"{stage}: {result.stderr}"
+        lines = calls.read_text().splitlines()
+        assert f"CONFIG <{config}>" in lines
+        assert lines[-1] == f"ARG <{stage}>"
+
+    calls.unlink()
+    legacy = subprocess.run(
+        [str(spool / BATCH.name)],
+        cwd=spool,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert legacy.returncode == 0, legacy.stderr
+    legacy_lines = calls.read_text().splitlines()
+    assert legacy_lines[-1] == "ARG <pretrain>"
+    assert f"CONFIG <{config}>" in legacy_lines
 
 
 def test_common_runner_delegates_config_and_doctor_for_gpu_stages(tmp_path: Path) -> None:

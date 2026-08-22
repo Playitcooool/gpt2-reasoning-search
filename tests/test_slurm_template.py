@@ -89,6 +89,7 @@ def test_template_delegates_doctor_and_stage_safely_without_nested_sbatch(
             "SSH_TRAIN_CONFIG": str(config),
             "FAKE_CALLS": str(calls),
             "SLURM_JOB_ID": "1234",
+            "SLURM_SUBMIT_DIR": str(project),
         }
     )
 
@@ -147,6 +148,7 @@ def test_template_rejects_missing_config_before_worker_execution(tmp_path: Path)
             "PATH": str(fake_bin),
             "SSH_TRAIN_CONFIG": str(missing_config),
             "FAKE_CALLS": str(calls),
+            "SLURM_SUBMIT_DIR": str(project),
         }
     )
 
