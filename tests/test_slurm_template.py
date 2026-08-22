@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "scripts" / "slurm" / "train_h100.sbatch"
+RUNNER = ROOT / "scripts" / "slurm" / "run_stage.sh"
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -33,6 +34,7 @@ def _copy_template_project(tmp_path: Path) -> tuple[Path, Path]:
     (project / "scripts" / "ssh").mkdir()
     script = project / "scripts" / "slurm" / TEMPLATE.name
     shutil.copy2(TEMPLATE, script)
+    shutil.copy2(RUNNER, project / "scripts" / "slurm" / RUNNER.name)
     return project, script
 
 
@@ -79,7 +81,7 @@ def test_template_delegates_doctor_and_stage_safely_without_nested_sbatch(
         'printf "ARG <%s>\\n" "$@" >> "$FAKE_CALLS"\n',
     )
     fake_bin = _fake_path(tmp_path)
-    stage = f"pretrain; touch {escaped}"
+    stage = "pretrain"
     environment = os.environ.copy()
     environment.update(
         {
@@ -106,7 +108,7 @@ def test_template_delegates_doctor_and_stage_safely_without_nested_sbatch(
         f"CONFIG <{config}>",
         "ARG <doctor>",
         f"CONFIG <{config}>",
-        f"ARG <{stage}>",
+        "ARG <pretrain>",
     ]
     assert not escaped.exists()
     executable_lines = "\n".join(
@@ -114,8 +116,20 @@ def test_template_delegates_doctor_and_stage_safely_without_nested_sbatch(
     )
     assert re.search(r"\bsbatch\b", executable_lines) is None
     assert 'exec env SSH_TRAIN_CONFIG="$CONFIG_FILE" scripts/ssh/worker.sh "$STAGE"' in (
-        TEMPLATE.read_text()
+        RUNNER.read_text()
     )
+
+    injection = subprocess.run(
+        [str(script), f"pretrain; touch {escaped}"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert injection.returncode == 2
+    assert not escaped.exists()
 
 
 def test_template_rejects_missing_config_before_worker_execution(tmp_path: Path) -> None:
@@ -158,12 +172,12 @@ def test_slurm_template_documentation_commands_and_outputs_are_accurate() -> Non
 
     assert "scripts/slurm/submit_8h_pipeline.sh" in readme
     for command in (
-        "chmod +x scripts/slurm/train_h100.sbatch",
         "scripts/slurm/submit_8h_pipeline.sh",
-        "sbatch scripts/slurm/train_h100.sbatch pretrain",
+        "scripts/slurm/submit_stage.sh pretrain",
+        "sbatch scripts/slurm/pretrain.sbatch",
     ):
         assert command in guide
     assert "logs/slurm-<job-name>-<job-id>.*" in guide
     assert "#SBATCH --output=logs/slurm-%x-%j.out" in TEMPLATE.read_text()
     assert "#SBATCH --error=logs/slurm-%x-%j.err" in TEMPLATE.read_text()
-    assert "scripts/slurm/train_h100.sbatch" in combined
+    assert "scripts/slurm/pretrain.sbatch" in combined

@@ -37,10 +37,12 @@ results separately from the default pipeline.
 
 Metrics are appended to `metrics.jsonl`. Watch loss, gradient norm, learning rate, tokens/second,
 MFU estimate, peak memory, reasoning/general token counters, and the calibrated final token budget.
-Direct single-stage retries use the batch template and resume from the newest complete checkpoint:
+Direct single-stage retries use the stage-specific batch script and resume from the newest complete checkpoint:
 
 ```bash
-sbatch scripts/slurm/train_h100.sbatch pretrain
+scripts/slurm/submit_stage.sh pretrain
+# Equivalent direct Slurm invocation with the checked-in eight-hour defaults:
+# sbatch scripts/slurm/pretrain.sbatch
 ```
 
 If a stage reaches its walltime, cancel pending dependent jobs and rerun

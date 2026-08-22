@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Submit one stage from the repository root (each job has its own 8-hour limit):
-#   sbatch scripts/slurm/train_h100.sbatch pretrain
-# Or submit the dependent pretrain -> SFT -> RL pipeline:
-#   scripts/slurm/submit_8h_pipeline.sh
-# To resume one stage:
-#   sbatch scripts/slurm/train_h100.sbatch pretrain
+# Compatibility shim. Prefer the explicit stage scripts:
+#   sbatch scripts/slurm/pretrain.sbatch
+#   sbatch scripts/slurm/sft.sbatch
+#   sbatch scripts/slurm/rl.sbatch
 
 #SBATCH --job-name=grs-train
 #SBATCH --gres=gpu:1
@@ -23,18 +21,4 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STAGE="${1:-pretrain}"
-CONFIG_FILE="${SSH_TRAIN_CONFIG:-$PROJECT_ROOT/config/ssh.env}"
-
-[[ -f "$CONFIG_FILE" ]] || {
-  echo "Missing $CONFIG_FILE. Run ./train-ssh setup and edit config/ssh.env first." >&2
-  exit 2
-}
-
-cd "$PROJECT_ROOT"
-mkdir -p logs
-echo "Job ${SLURM_JOB_ID:-unknown}; host $(hostname); stage $STAGE"
-echo "Started $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-nvidia-smi || true
-env SSH_TRAIN_CONFIG="$CONFIG_FILE" scripts/ssh/worker.sh doctor
-
-exec env SSH_TRAIN_CONFIG="$CONFIG_FILE" scripts/ssh/worker.sh "$STAGE"
+exec "$PROJECT_ROOT/scripts/slurm/run_stage.sh" "$STAGE"

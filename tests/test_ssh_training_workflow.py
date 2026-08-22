@@ -476,7 +476,8 @@ def test_removed_slurm_alias_is_rejected_and_canonical_commands_are_documented(
     assert alias_result.returncode == 2
     assert "./train-ssh slurm" not in alias_result.stderr
     assert "scripts/slurm/submit_8h_pipeline.sh" in guide
-    assert "sbatch scripts/slurm/train_h100.sbatch pretrain" in guide
+    assert "scripts/slurm/submit_stage.sh pretrain" in guide
+    assert "sbatch scripts/slurm/pretrain.sbatch" in guide
     assert "sbatch scripts/slurm/submit_8h_pipeline.sh" not in guide
 
 

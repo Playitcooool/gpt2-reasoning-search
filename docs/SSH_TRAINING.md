@@ -94,27 +94,43 @@ For a quick pipeline rehearsal, lower `REASONING_TOKEN_CAP`, `GENERAL_TOKEN_CAP`
 `MAIN_TOKEN_CAP`, and the time budgets in `config/ssh.env`. Do not compare that rehearsal with the
 full experiment.
 
-## Slurm retries and logs
+## Slurm stage scripts, retries, and logs
 
-The batch template is useful for a prepared single-stage retry. Its `#SBATCH` directives are read by
-Slurm before the worker starts, so edit those lines only when the school requires scheduler values
-that cannot be supplied through `config/ssh.env`.
+There is one checked-in batch script for every worker stage. The config-aware submitter is the
+easiest way to use them because it applies `SLURM_ACCOUNT`, `SLURM_TIME`, partition, GPU, CPU, and
+memory settings from `config/ssh.env`:
 
 ```bash
-chmod +x scripts/slurm/train_h100.sbatch
-# The normal pipeline is the wrapper above. Use this only for a prepared retry:
-sbatch scripts/slurm/train_h100.sbatch pretrain
+scripts/slurm/submit_stage.sh prepare   # optional CPU preparation job
+scripts/slurm/submit_stage.sh smoke
+scripts/slurm/submit_stage.sh proxies   # optional proxy ablations
+scripts/slurm/submit_stage.sh pretrain
+scripts/slurm/submit_stage.sh sft
+scripts/slurm/submit_stage.sh rl
 ```
 
-The script writes Slurm stdout/stderr to `logs/slurm-<job-name>-<job-id>.*` and runs the same safe,
-auto-resuming worker as `train-ssh`. Each stage gets a separate eight-hour allocation. The combined
-`all` stage is blocked by the default 8-hour profile so it cannot accidentally exceed the reservation.
+If you want to call Slurm directly, the corresponding scripts are
+`scripts/slurm/prepare.sbatch`, `smoke.sbatch`, `proxies.sbatch`, `pretrain.sbatch`, `sft.sbatch`,
+`rl.sbatch`, and `all.sbatch`:
+
+```bash
+sbatch scripts/slurm/pretrain.sbatch
+sbatch scripts/slurm/sft.sbatch
+sbatch scripts/slurm/rl.sbatch
+```
+
+Direct `sbatch` uses the safe eight-hour defaults written in each file. Use `submit_stage.sh` when
+you want the values from `config/ssh.env` without editing scripts. Every stage writes Slurm
+stdout/stderr to `logs/slurm-<job-name>-<job-id>.*` and runs the same safe, auto-resuming worker as
+`train-ssh`. The combined `all` stage is blocked by the default 8-hour profile so it cannot
+accidentally exceed the reservation. `train_h100.sbatch` remains as a compatibility shim for old
+commands; new runs should use the explicit stage names above.
 
 If a stage reaches its eight-hour limit, cancel the still-pending dependent jobs from that chain and
 rerun `scripts/slurm/submit_8h_pipeline.sh`. Completed stages are skipped, and the incomplete stage
 resumes its newest complete checkpoint before new `afterok` dependencies are created. For a
-single-stage retry, submit `sbatch scripts/slurm/train_h100.sbatch <stage>` and launch the next
-stage only after its final checkpoint exists.
+single-stage retry, use `scripts/slurm/submit_stage.sh <stage>` (or the matching explicit `.sbatch`
+file) and launch the next stage only after its final checkpoint exists.
 
 ## Useful commands
 

@@ -50,6 +50,11 @@ then pretraining, tool SFT, and search RL each get a separate 7.5-hour training 
 are resumable; the pretrain job runs the small CUDA smoke gate once before training, and proxy
 ablations are disabled by default. See the [SSH training guide](docs/SSH_TRAINING.md).
 
+Each worker stage also has its own Slurm script (`scripts/slurm/pretrain.sbatch`, `sft.sbatch`,
+`rl.sbatch`, and the supporting `prepare.sbatch`, `smoke.sbatch`, `proxies.sbatch`, and `all.sbatch`).
+Use `scripts/slurm/submit_stage.sh <stage>` to apply the account and time from `config/ssh.env`, or
+call an `.sbatch` file directly with its checked-in eight-hour defaults.
+
 For a direct server without Slurm, use the same worker one stage at a time:
 
 ```bash
