@@ -61,6 +61,7 @@ def _run_submitter(
     fake_bin: Path,
     calls: Path,
     counter: Path,
+    arguments: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(
@@ -72,7 +73,7 @@ def _run_submitter(
         }
     )
     return subprocess.run(
-        [str(submitter)],
+        [str(submitter), *arguments],
         cwd=project.parent,
         env=environment,
         capture_output=True,
@@ -333,6 +334,7 @@ def test_pipeline_submits_three_independent_eight_hour_jobs_with_afterok_depende
     assert "ARG <--dependency=afterok:202>" in groups[2]
     assert "ARG <all>" not in calls.read_text()
     assert "squeue -j 101,202,303" in result.stdout
+    assert "prepare.sbatch" not in calls.read_text()
 
 
 def test_pipeline_stops_if_scheduler_job_id_is_not_valid(tmp_path: Path) -> None:
@@ -510,6 +512,183 @@ def test_submit_stage_rejects_unknown_stage_before_scheduler_call(tmp_path: Path
     assert not calls.exists()
 
 
+def test_submit_stage_auto_queues_cpu_prepare_for_missing_pretrain_inputs(
+    tmp_path: Path,
+) -> None:
+    project, config = _copy_project(tmp_path)
+    config.write_text("SESSION_PREFIX=auto\nSLURM_GPUS=h100\n")
+    calls = tmp_path / "calls.log"
+    counter = tmp_path / "counter"
+    fake_bin = _fake_path(
+        tmp_path,
+        "count=0\n"
+        'if [[ -f "$FAKE_COUNTER" ]]; then read -r count < "$FAKE_COUNTER"; fi\n'
+        "count=$((count + 1))\n"
+        'printf "%s\\n" "$count" > "$FAKE_COUNTER"\n'
+        '{ echo CALL; printf "ARG <%s>\\n" "$@"; } >> "$FAKE_CALLS"\n'
+        'case "$count" in 1) echo 501 ;; 2) echo "502;cluster" ;; esac\n',
+    )
+    result = _run_submitter(
+        project / "scripts" / "slurm" / STAGE_SUBMITTER.name,
+        project=project,
+        config=config,
+        fake_bin=fake_bin,
+        calls=calls,
+        counter=counter,
+        arguments=("pretrain",),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "502"
+    assert "Queued data preparation CPU job 501" in result.stderr
+    groups = calls.read_text().split("CALL\n")[1:]
+    assert len(groups) == 2
+    assert f"ARG <{project / 'scripts' / 'slurm' / 'prepare.sbatch'}>" in groups[0]
+    assert "ARG <--gpus=" not in groups[0]
+    assert f"ARG <{project / 'scripts' / 'slurm' / 'pretrain.sbatch'}>" in groups[1]
+    assert "ARG <--gpus=h100>" in groups[1]
+    assert "ARG <--dependency=afterok:501>" in groups[1]
+
+
+def test_submit_stage_skips_auto_prepare_for_prepared_and_legacy_sparse_inputs(
+    tmp_path: Path,
+) -> None:
+    project, config = _copy_project(tmp_path)
+    processed = project / "data" / "processed"
+    processed.mkdir(parents=True)
+    for name in ("reasoning.bin", "general.bin"):
+        token_file = processed / name
+        token_file.write_bytes(b"\0")
+        token_file.with_suffix(".manifest.json").write_text("{}\n")
+    (processed / "preparation-manifest.json").write_text("{}\n")
+    artifacts = project / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "tokenizer.json").write_text("ready\n")
+    config.write_text("SESSION_PREFIX=prepared\n")
+    calls = tmp_path / "calls.log"
+    counter = tmp_path / "counter"
+    fake_bin = _fake_path(
+        tmp_path,
+        '{ echo CALL; printf "ARG <%s>\\n" "$@"; } >> "$FAKE_CALLS"\necho 503\n',
+    )
+
+    prepared = _run_submitter(
+        project / "scripts" / "slurm" / STAGE_SUBMITTER.name,
+        project=project,
+        config=config,
+        fake_bin=fake_bin,
+        calls=calls,
+        counter=counter,
+        arguments=("pretrain",),
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    assert prepared.stdout.strip() == "503"
+    assert prepared.stderr == ""
+    prepared_log = calls.read_text()
+    assert prepared_log.count("CALL") == 1
+    assert "prepare.sbatch" not in prepared_log
+    assert "ARG <--gpus=h100>" in prepared_log
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    for name in ("reasoning.npy", "general.npy"):
+        (legacy / name).write_bytes(b"legacy")
+    (legacy / "tokenizer.json").write_text("ready\n")
+    (legacy / "preparation-manifest.json").write_text("{}\n")
+    legacy_config = project / "config" / "legacy.env"
+    legacy_config.write_text(
+        "\n".join(
+            (
+                "SESSION_PREFIX=legacy",
+                f"REASONING_TOKENS={legacy / 'reasoning.npy'}",
+                f"GENERAL_TOKENS={legacy / 'general.npy'}",
+                f"TOKENIZER_PATH={legacy / 'tokenizer.json'}",
+            )
+        )
+        + "\n"
+    )
+    calls.unlink()
+    legacy_result = _run_submitter(
+        project / "scripts" / "slurm" / STAGE_SUBMITTER.name,
+        project=project,
+        config=legacy_config,
+        fake_bin=fake_bin,
+        calls=calls,
+        counter=counter,
+        arguments=("pretrain",),
+    )
+    assert legacy_result.returncode == 0, legacy_result.stderr
+    assert legacy_result.stdout.strip() == "503"
+    legacy_log = calls.read_text()
+    assert legacy_log.count("CALL") == 1
+    assert "prepare.sbatch" not in legacy_log
+
+
+def test_submit_stage_auto_prepare_bypass_and_error_handling(tmp_path: Path) -> None:
+    project, config = _copy_project(tmp_path)
+    config.write_text("SESSION_PREFIX=bypass\nAUTO_PREPARE=0\n")
+    calls = tmp_path / "calls.log"
+    counter = tmp_path / "counter"
+    fake_bin = _fake_path(
+        tmp_path,
+        '{ echo CALL; printf "ARG <%s>\\n" "$@"; } >> "$FAKE_CALLS"\necho 601\n',
+    )
+    bypassed = _run_submitter(
+        project / "scripts" / "slurm" / STAGE_SUBMITTER.name,
+        project=project,
+        config=config,
+        fake_bin=fake_bin,
+        calls=calls,
+        counter=counter,
+        arguments=("pretrain",),
+    )
+    assert bypassed.returncode == 0, bypassed.stderr
+    assert bypassed.stdout.strip() == "601"
+    assert bypassed.stderr == ""
+    assert "prepare.sbatch" not in calls.read_text()
+    assert "ARG <--dependency" not in calls.read_text()
+
+    calls.unlink()
+    config.write_text("SESSION_PREFIX=explicit\n")
+    explicit = subprocess.run(
+        [str(project / "scripts" / "slurm" / STAGE_SUBMITTER.name), "pretrain", "777"],
+        cwd=project.parent,
+        env={
+            **os.environ,
+            "PATH": str(fake_bin),
+            "SSH_TRAIN_CONFIG": str(config),
+            "FAKE_CALLS": str(calls),
+            "FAKE_COUNTER": str(counter),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert explicit.returncode == 0, explicit.stderr
+    assert explicit.stdout.strip() == "601"
+    explicit_log = calls.read_text()
+    assert "prepare.sbatch" not in explicit_log
+    assert "ARG <--dependency=afterok:777>" in explicit_log
+
+    calls.unlink()
+    invalid_root = tmp_path / "invalid"
+    invalid_root.mkdir()
+    invalid_bin = _fake_path(invalid_root, 'echo "not-a-job-id"\n')
+    invalid = _run_submitter(
+        project / "scripts" / "slurm" / STAGE_SUBMITTER.name,
+        project=project,
+        config=config,
+        fake_bin=invalid_bin,
+        calls=calls,
+        counter=counter,
+        arguments=("pretrain",),
+    )
+    assert invalid.returncode == 3
+    assert "Could not parse Slurm job id" in invalid.stderr
+    assert not calls.exists()
+
+
 def test_submit_stage_ignores_legacy_slurm_gres_and_defaults_to_h100_gpus(
     tmp_path: Path,
 ) -> None:
@@ -560,6 +739,12 @@ def test_pipeline_docs_use_direct_submitter_and_never_submit_combined_all() -> N
     assert "SLURM_GRES" not in readme + guide + setup
     assert "sbatch --gres" not in readme + guide + setup
     assert "not converted into a `--gres` request" in guide
+    assert "automatically queues a" in readme
+    assert "CPU-only preparation job" in readme + guide
+    assert "afterok" in guide
+    assert "AUTO_PREPARE=0" in guide
+    normalized_docs = " ".join((readme + guide).split())
+    assert "prints the pretraining job ID" in normalized_docs
     assert 'STAGE="${1:-pretrain}"' in batch
     assert "dependent jobs" in guide
     assert "Each stage receives an eight-hour reservation" in guide

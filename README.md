@@ -55,6 +55,10 @@ Each worker stage also has its own Slurm script (`scripts/slurm/pretrain.sbatch`
 Use `scripts/slurm/submit_stage.sh <stage>` to apply the account and time from `config/ssh.env`, or
 call an `.sbatch` file directly with its checked-in eight-hour defaults.
 
+When data has not been prepared yet, `scripts/slurm/submit_stage.sh pretrain` automatically queues a
+CPU-only preparation job and makes the H100 pretraining job wait for it. It prints the pretraining
+job ID; use the full pipeline command above when you also want SFT and RL queued automatically.
+
 For a direct server without Slurm, use the same worker one stage at a time:
 
 ```bash

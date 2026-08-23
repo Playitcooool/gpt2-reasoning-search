@@ -47,6 +47,9 @@ scripts/slurm/submit_stage.sh pretrain
 # sbatch scripts/slurm/pretrain.sbatch
 ```
 
+The config-aware submitter automatically queues a CPU `prepare` dependency when its fixed inputs are
+missing, so a new pretraining job does not consume H100 time preparing data.
+
 If a stage reaches its walltime, cancel pending dependent jobs and rerun
 `scripts/slurm/submit_8h_pipeline.sh`. Completed stages are skipped, and the incomplete stage
 resumes automatically. Do not combine metrics from runs with different tokenizer hashes, data

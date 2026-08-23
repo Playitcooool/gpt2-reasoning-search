@@ -34,7 +34,7 @@ export SSH_TRAIN_CONFIG="$CONFIG_FILE"
 echo "Preparing data and fixed training inputs before submitting GPU jobs..."
 "$WORKER_SCRIPT" prepare
 
-pretrain_job="$(SSH_TRAIN_CONFIG="$CONFIG_FILE" "$SUBMIT_STAGE" pretrain)"
+pretrain_job="$(AUTO_PREPARE=0 SSH_TRAIN_CONFIG="$CONFIG_FILE" "$SUBMIT_STAGE" pretrain)"
 sft_job="$(SSH_TRAIN_CONFIG="$CONFIG_FILE" "$SUBMIT_STAGE" sft "$pretrain_job")"
 rl_job="$(SSH_TRAIN_CONFIG="$CONFIG_FILE" "$SUBMIT_STAGE" rl "$sft_job")"
 

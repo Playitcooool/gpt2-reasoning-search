@@ -112,6 +112,11 @@ scripts/slurm/submit_stage.sh sft
 scripts/slurm/submit_stage.sh rl
 ```
 
+If the fixed training data does not exist, `submit_stage.sh pretrain` first queues `prepare` as a
+CPU-only job, then submits pretraining with an `afterok` dependency. The command prints the
+pretraining job ID and does not spend H100 time on downloads or preprocessing. Supplying an explicit
+dependency, or setting `AUTO_PREPARE=0`, leaves dependency management in your control.
+
 If you want to call Slurm directly, the corresponding scripts are
 `scripts/slurm/prepare.sbatch`, `smoke.sbatch`, `proxies.sbatch`, `pretrain.sbatch`, `sft.sbatch`,
 `rl.sbatch`, and `all.sbatch`:
