@@ -98,6 +98,9 @@ def test_rl_cli_registers_documented_paths_options_and_safe_retrieval_defaults()
     assert parameters["output"].default == Path("checkpoints/search-rl")
     assert parameters["group_size"].default == 4
     assert parameters["max_searches"].default == 3
+    assert parameters["lexical_only"].default is True
+    assert "--lexical-only" in parameters["lexical_only"].opts
+    assert "--hybrid-retrieval" in parameters["lexical_only"].secondary_opts
     assert parameters["enable_reranker"].default is False
     assert parameters["retrieval_device"].default == "cpu"
     assert parameters["llm_judge"].default is True
@@ -142,6 +145,7 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
 
     enabled = CliRunner().invoke(app, base_args)
     disabled = CliRunner().invoke(app, [*base_args, "--no-llm-judge"])
+    hybrid = CliRunner().invoke(app, [*base_args, "--hybrid-retrieval", "--no-llm-judge"])
     invalid_custom = CliRunner().invoke(
         app, [*base_args, "--judge-model", "organization/custom-judge"]
     )
@@ -153,6 +157,9 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
     assert disabled.exit_code == 0
     assert captured[1].judge_model is None
     assert captured[1].judge_revision is None
+    assert captured[0].enable_dense_retrieval is False
+    assert hybrid.exit_code == 0
+    assert captured[2].enable_dense_retrieval is True
     assert invalid_custom.exit_code != 0
     normalized_error = " ".join(strip_ansi(invalid_custom.output).split())
     assert "custom --judge-model requires --judge-revision" in normalized_error
@@ -181,7 +188,8 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
     assert "frozen copy of the tool-SFT checkpoint" in rl_guide
     assert "The reference always remains the original `--checkpoint`" in rl_guide
     assert "epoch, prompt cursor, rollout count, and action-token count resume" in rl_guide
-    assert "embedding model defaults to CPU" in rl_guide
+    assert "RL defaults to bounded BM25 retrieval (`--lexical-only`)" in rl_guide
+    assert "Use `--hybrid-retrieval` only after measuring CPU-RAM" in rl_guide
     assert "reranker is disabled by default" in rl_guide
     assert "Use only the frozen local index for RL" in rl_guide
     assert "grouped online trajectories against the frozen local index" in architecture

@@ -67,6 +67,7 @@ class SearchRLConfig:
     weight_decay: float = 0.1
     save_every_steps: int = 100
     seed: int = 42
+    enable_dense_retrieval: bool = False
     enable_reranker: bool = False
     retrieval_device: str = "cpu"
     judge_model: str | None = None
@@ -391,6 +392,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
     )
     provider = LocalWikipediaSearchProvider(
         config.index_directory,
+        enable_dense=config.enable_dense_retrieval,
         enable_reranker=config.enable_reranker,
         model_device=config.retrieval_device,
     )

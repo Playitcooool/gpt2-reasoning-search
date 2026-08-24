@@ -222,6 +222,7 @@ class LocalWikipediaSearchProvider:
         *,
         dense_encoder: DenseEncoder | None = None,
         reranker=None,
+        enable_dense: bool = True,
         enable_reranker: bool = False,
         model_device: str | None = None,
     ) -> None:
@@ -232,7 +233,12 @@ class LocalWikipediaSearchProvider:
         )
         self.manifest = json.loads((index_directory / "retrieval-manifest.json").read_text())
         dense_path = index_directory / "dense.usearch"
-        self.dense_index = VectorIndex.restore(dense_path) if dense_path.exists() else None
+        # A full Wikipedia HNSW index can be many tens of GiB.  Keep the default for
+        # serving, while allowing bounded training jobs to use the BM25 artifact
+        # without mapping the optional dense vectors into host memory.
+        self.dense_index = (
+            VectorIndex.restore(dense_path) if enable_dense and dense_path.exists() else None
+        )
         if self.dense_index is not None and dense_encoder is None:
             model = self.manifest["embedding_model"]
             dense_encoder = SentenceTransformerEncoder(

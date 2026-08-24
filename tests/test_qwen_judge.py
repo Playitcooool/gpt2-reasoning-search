@@ -223,9 +223,11 @@ def test_qwen_judge_loads_pinned_revision_and_scores_deterministically(monkeypat
         "add_generation_prompt": True,
         "return_dict": True,
         "return_tensors": "pt",
-        "truncation": True,
-        "max_length": 512,
         "enable_thinking": False,
+        "processor_kwargs": {
+            "truncation": True,
+            "max_length": 512,
+        },
     }
     generated = calls["generate"]
     assert generated["do_sample"] is False

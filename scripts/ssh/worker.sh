@@ -375,11 +375,16 @@ run_rl() {
   if [[ "${USE_LLM_JUDGE:-1}" == "0" ]]; then
     judge_args=(--no-llm-judge)
   fi
+  local retrieval_args=(--lexical-only)
+  if [[ "${RL_LEXICAL_ONLY:-1}" == "0" ]]; then
+    retrieval_args=(--hybrid-retrieval)
+  fi
   local args=(uv run --locked gpt2-reasoning-search rl-search \
     --checkpoint "$SFT_OUTPUT" --tokenizer-path "$TOKENIZER_PATH" \
     --prompts "$RL_PROMPTS" --index "$WIKI_INDEX" --output "$RL_OUTPUT" \
     --epochs "$RL_EPOCHS" --time-budget-hours "$RL_HOURS" \
     --group-size "$RL_GROUP_SIZE" --max-searches 3 \
+    "${retrieval_args[@]}" \
     "${judge_args[@]}")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"

@@ -759,6 +759,42 @@ def test_incomplete_downstream_stage_returns_temporary_failure_for_afterok_chain
     assert "Re-submit the same stage to resume" in result.stdout + result.stderr
 
 
+def test_worker_rl_defaults_to_lexical_retrieval_and_allows_hybrid_opt_in(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    _create_prepared_inputs(tmp_path)
+    _complete_checkpoint(tmp_path / "outputs" / "sft")
+    config = _write_config(project, tmp_path, RUN_SMOKE=0)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    lexical = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "rl"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    assert lexical.returncode == 75
+    lexical_log = calls.read_text()
+    assert "ARG <--lexical-only>" in lexical_log
+    assert "ARG <--hybrid-retrieval>" not in lexical_log
+
+    calls.write_text("")
+    hybrid_config = _write_config(project, tmp_path, RUN_SMOKE=0, RL_LEXICAL_ONLY=0)
+    hybrid = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "rl"],
+        project=project,
+        config=hybrid_config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    assert hybrid.returncode == 75
+    hybrid_log = calls.read_text()
+    assert "ARG <--hybrid-retrieval>" in hybrid_log
+    assert "ARG <--lexical-only>" not in hybrid_log
+
+
 def test_custom_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_path: Path) -> None:
     project = _copy_workflow(tmp_path)
     config = _write_config(project, tmp_path, PREPARE_IN_JOB=0, ALLOW_COMBINED_JOB=1)

@@ -122,8 +122,12 @@ def test_qwen_judge_uses_pinned_deterministic_non_thinking_generation(
     assert model_kwargs["attn_implementation"] == "sdpa"
     template_kwargs = calls["template_kwargs"]
     assert template_kwargs["enable_thinking"] is False
-    assert template_kwargs["truncation"] is True
-    assert template_kwargs["max_length"] == 4096
+    assert template_kwargs["processor_kwargs"] == {
+        "truncation": True,
+        "max_length": 4096,
+    }
+    assert "truncation" not in template_kwargs
+    assert "max_length" not in template_kwargs
     generate_kwargs = calls["generate_kwargs"]
     assert generate_kwargs["do_sample"] is False
     assert generate_kwargs["max_new_tokens"] == 128

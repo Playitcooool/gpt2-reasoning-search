@@ -81,9 +81,10 @@ uv run gpt2-reasoning-search rl-search \
   --llm-judge --judge-device cuda
 ```
 
-The embedding model defaults to CPU during RL so the policy, frozen reference, optimizer, and
-activations retain H100 memory. Use `--retrieval-device cuda` only after measuring memory headroom.
-The reranker is disabled by default for throughput and can be enabled with `--enable-reranker`.
+RL defaults to bounded BM25 retrieval (`--lexical-only`), so a large optional dense Wikipedia index
+is not mapped into the job's host memory. Use `--hybrid-retrieval` only after measuring CPU-RAM
+headroom; it loads the dense vector index as well. The reranker is disabled by default for
+throughput and can be enabled with `--enable-reranker`.
 The revision-pinned Qwen judge is enabled by default in the CLI. Use `--no-llm-judge` for a matched
 deterministic-only ablation; changing `--judge-model` also requires an explicit pinned
 `--judge-revision`.

@@ -258,6 +258,35 @@ def test_lexical_title_boost_reranking_async_and_close(tmp_path: Path) -> None:
     reranked.close()
 
 
+def test_provider_disabled_dense_retrieval_does_not_restore_or_load_encoder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    index = tmp_path / "index"
+    build_wikipedia_index(
+        DOCUMENTS, index, dense_encoder=FakeDenseEncoder(), embedding_batch_size=1
+    )
+    assert (index / "dense.usearch").is_file()
+
+    class FailingVectorIndex:
+        @staticmethod
+        def restore(_path):
+            raise AssertionError("dense index should not be restored")
+
+    class FailingEncoder:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("dense encoder should not be loaded")
+
+    monkeypatch.setattr("gpt2_reasoning_search.retrieval.VectorIndex", FailingVectorIndex)
+    monkeypatch.setattr(
+        "gpt2_reasoning_search.retrieval.SentenceTransformerEncoder", FailingEncoder
+    )
+
+    provider = LocalWikipediaSearchProvider(index, enable_dense=False)
+    assert provider.dense_index is None
+    assert provider.dense_encoder is None
+    provider.close()
+
+
 def test_sqlite_cache_hit_expiry_and_close(tmp_path: Path, monkeypatch) -> None:
     clock = [100.0]
     monkeypatch.setattr("gpt2_reasoning_search.web_search.time.time", lambda: clock[0])

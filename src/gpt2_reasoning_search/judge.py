@@ -145,9 +145,11 @@ class QwenRewardJudge:
             add_generation_prompt=True,
             return_dict=True,
             return_tensors="pt",
-            truncation=True,
-            max_length=self.max_input_tokens,
             enable_thinking=False,
+            processor_kwargs={
+                "truncation": True,
+                "max_length": self.max_input_tokens,
+            },
         )
         inputs = {name: value.to(self.device) for name, value in inputs.items()}
         prompt_length = inputs["input_ids"].shape[-1]
