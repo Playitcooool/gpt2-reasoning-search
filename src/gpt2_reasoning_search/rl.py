@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import random
 import re
 import time
@@ -27,6 +28,7 @@ from .model import GPT2ReasoningModel
 from .retrieval import LocalWikipediaSearchProvider
 from .schemas import AnswerRequest, AnswerResponse
 from .train import optimizer_parameter_groups, warmup_cosine_factor
+from .web_search import BraveWebSearchProvider, SQLiteSearchCache
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +59,7 @@ class SearchRLConfig:
     epochs: int = 1
     group_size: int = 4
     max_searches: int = 3
+    search_mode: str = "local"
     learning_rate: float = 1e-6
     warmup_fraction: float = 0.03
     kl_coefficient: float = 0.02
@@ -83,6 +86,8 @@ class SearchRLConfig:
             raise ValueError("RL requires at least one epoch and two rollouts per group")
         if not 0 <= self.max_searches <= 3:
             raise ValueError("max_searches must be between zero and three")
+        if self.search_mode not in {"local", "web", "auto"}:
+            raise ValueError("RL search_mode must be local, web, or auto")
         if self.learning_rate <= 0 or self.kl_coefficient < 0 or self.grad_clip <= 0:
             raise ValueError("invalid optimizer or KL configuration")
         if not 0 <= self.warmup_fraction < 1:
@@ -334,6 +339,9 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
     reward_weights = reward_weights or RewardWeights()
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for search reinforcement learning")
+    brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
+    if config.search_mode == "web" and not brave_key:
+        raise ValueError("BRAVE_SEARCH_API_KEY is required for RL web search")
     deadline = (
         time.perf_counter() + config.time_budget_hours * 3600
         if config.time_budget_hours is not None
@@ -390,15 +398,26 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
         top_k=config.top_k,
         maximum_new_tokens=config.max_new_tokens,
     )
+    config.output_directory.mkdir(parents=True, exist_ok=True)
     provider = LocalWikipediaSearchProvider(
         config.index_directory,
         enable_dense=config.enable_dense_retrieval,
         enable_reranker=config.enable_reranker,
         model_device=config.retrieval_device,
     )
-    agent = SearchAgent(generator, provider)
+    web_provider = (
+        BraveWebSearchProvider(
+            brave_key,
+            cache=SQLiteSearchCache(
+                config.output_directory / "brave-search-cache.sqlite3",
+                ttl_seconds=30 * 24 * 60 * 60,
+            ),
+        )
+        if brave_key and config.search_mode != "local"
+        else None
+    )
+    agent = SearchAgent(generator, provider, web_provider)
     judge: QwenRewardJudge | None = None
-    config.output_directory.mkdir(parents=True, exist_ok=True)
     metrics_path = config.output_directory / "metrics.jsonl"
     checkpoint_config = {
         **state["config"],
@@ -433,7 +452,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                             agent.answer(
                                 AnswerRequest(
                                     query=row["question"],
-                                    search_mode="local",
+                                    search_mode=config.search_mode,  # type: ignore[arg-type]
                                     max_searches=config.max_searches,
                                 )
                             )
@@ -505,6 +524,16 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
                         "learning_rate": scheduler.get_last_lr()[0],
                         "rollouts": rollouts_seen,
                         "action_tokens": action_tokens_seen,
+                        "web_searches": sum(
+                            entry.provider == "web"
+                            for rollout in rollout_records
+                            for entry in rollout[1].tool_trace
+                        ),
+                        "local_fallbacks": sum(
+                            entry.provider == "local-fallback"
+                            for rollout in rollout_records
+                            for entry in rollout[1].tool_trace
+                        ),
                         "judge_latency_seconds": float(
                             np.mean([rollout[3] for rollout in rollout_records])
                         ),

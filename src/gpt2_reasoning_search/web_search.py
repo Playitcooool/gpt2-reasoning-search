@@ -23,6 +23,10 @@ from .search import canonicalize_url, sanitize_retrieved_text, stable_source_id
 Resolver = Callable[[str], Awaitable[Sequence[str]]]
 
 
+class WebSearchUnavailable(RuntimeError):
+    """A live-search provider is unavailable for the remainder of a run."""
+
+
 class SQLiteSearchCache:
     def __init__(self, path: Path, ttl_seconds: int = 3_600) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,10 +219,12 @@ class BraveWebSearchProvider:
         self.cache = cache
         self.page_fetcher = page_fetcher or WebPageFetcher(self.client)
         self.retries = retries
+        self.unavailable_reason: str | None = None
 
     async def _request(self, query: str, count: int) -> dict:
         headers = {"Accept": "application/json", "X-Subscription-Token": self.api_key}
         last_error: Exception | None = None
+        last_status: int | None = None
         for attempt in range(self.retries):
             try:
                 response = await self.client.get(
@@ -227,6 +233,7 @@ class BraveWebSearchProvider:
                     headers=headers,
                 )
                 if response.status_code == 429 or response.status_code >= 500:
+                    last_status = response.status_code
                     delay = min(4.0, float(response.headers.get("retry-after", 2**attempt)))
                     await asyncio.sleep(delay)
                     continue
@@ -236,6 +243,8 @@ class BraveWebSearchProvider:
                 last_error = error
                 if attempt + 1 < self.retries:
                     await asyncio.sleep(min(4.0, 2**attempt))
+        if last_status == 429:
+            raise WebSearchUnavailable("Brave API quota or rate limit reached after retries")
         raise RuntimeError("web search failed after retries") from last_error
 
     async def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
@@ -245,7 +254,13 @@ class BraveWebSearchProvider:
         cache_key = json.dumps(["brave", normalized_query.lower(), top_k])
         if self.cache and (cached := self.cache.get(cache_key)) is not None:
             return cached
-        payload = await self._request(normalized_query, min(20, max(top_k * 2, top_k)))
+        if self.unavailable_reason is not None:
+            raise WebSearchUnavailable(self.unavailable_reason)
+        try:
+            payload = await self._request(normalized_query, min(20, max(top_k * 2, top_k)))
+        except (RuntimeError, ValueError) as error:
+            self.unavailable_reason = f"Brave web search disabled for this run: {error}"
+            raise WebSearchUnavailable(self.unavailable_reason) from error
         rows = payload.get("web", {}).get("results", [])
         results = []
         seen_urls = set()

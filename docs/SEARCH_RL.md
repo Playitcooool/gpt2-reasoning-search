@@ -81,6 +81,14 @@ uv run gpt2-reasoning-search rl-search \
   --llm-judge --judge-device cuda
 ```
 
+By default, RL uses only the frozen local index. To deliberately train with live Brave results,
+export `BRAVE_SEARCH_API_KEY` and use `--search-mode web`. Successful results are cached for 30 days
+inside the RL output directory. If Brave reaches a quota/rate limit or becomes unavailable, it is
+disabled for the rest of that run and each attempted web search falls back to local Wikipedia rather
+than aborting the training job. This makes the run resilient, but changes its retrieval environment;
+record `web_searches` and `local_fallbacks` from `metrics.jsonl` and do not treat it as a fully
+reproducible benchmark.
+
 RL defaults to bounded BM25 retrieval (`--lexical-only`), so a large optional dense Wikipedia index
 is not mapped into the job's host memory. Use `--hybrid-retrieval` only after measuring CPU-RAM
 headroom; it loads the dense vector index as well. The reranker is disabled by default for
@@ -110,11 +118,12 @@ scheduler, RNG, epoch, prompt cursor, rollout count, and action-token count resu
 
 ## Safety and evaluation
 
-Use only the frozen local index for RL. Live web content makes rewards non-stationary and introduces
-unreviewed text into optimization. Run matched held-out evaluations for tool SFT versus search RL,
-including search-off cases. Reject a checkpoint that improves reward while degrading held-out answer
-accuracy, citation validity, language quality, or unnecessary-search rate; this is likely reward
-hacking rather than improved search reasoning.
+The frozen local index is the default for RL. Live web content makes rewards non-stationary and
+introduces unreviewed text into optimization; use it only for an explicitly exploratory run and keep
+the cached evidence and provider-usage metrics. Run matched held-out evaluations for tool SFT versus
+search RL, including search-off cases. Reject a checkpoint that improves reward while degrading
+held-out answer accuracy, citation validity, language quality, or unnecessary-search rate; this is
+likely reward hacking rather than improved search reasoning.
 
 Treat the question, candidate answer, and retrieved passages as possible prompt-injection inputs to
 the judge. The judge prompt tells it to treat them as quoted data, but that boundary is not a

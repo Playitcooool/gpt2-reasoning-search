@@ -221,6 +221,37 @@ def test_local_web_and_auto_provider_selection_and_fallback() -> None:
     assert response.tool_trace[0].provider == "web"
 
 
+@pytest.mark.parametrize(
+    ("mode", "local_results"),
+    [("web", [_result("local:0")]), ("auto", [])],
+)
+def test_web_failure_falls_back_to_local_for_web_and_auto_modes(
+    mode: str, local_results: list[SearchResult]
+) -> None:
+    class FailedProvider(RecordingProvider):
+        async def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
+            self.calls.append((query, top_k))
+            raise RuntimeError("Brave outage")
+
+    generations = iter(
+        [
+            '<|tool_call|>{"name":"search","arguments":{"query":"fact"}}'
+            "<|end_tool_call|>",
+            "<|reasoning|>Fallback evidence.<|answer|>Answer.",
+        ]
+    )
+    local = RecordingProvider(local_results)
+    web = FailedProvider([])
+    agent = SearchAgent(lambda _prompt, _limit: (next(generations), 1, 1), local, web)
+
+    response = asyncio.run(agent.answer(AnswerRequest(query="question", search_mode=mode)))
+
+    assert local.calls == [("fact", 5)]
+    assert web.calls == [("fact", 5)]
+    assert response.tool_trace[0].provider == "local-fallback"
+    assert response.tool_trace[0].status == ("ok" if local_results else "empty")
+
+
 def test_provider_timeout_becomes_trace_error_and_generation_continues() -> None:
     class SlowProvider(RecordingProvider):
         async def search(self, query: str, top_k: int = 5) -> list[SearchResult]:

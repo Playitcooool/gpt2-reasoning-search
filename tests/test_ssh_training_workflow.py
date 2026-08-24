@@ -795,6 +795,43 @@ def test_worker_rl_defaults_to_lexical_retrieval_and_allows_hybrid_opt_in(tmp_pa
     assert "ARG <--lexical-only>" not in hybrid_log
 
 
+def test_worker_rl_uses_web_only_when_brave_key_is_present(tmp_path: Path) -> None:
+    project = _copy_workflow(tmp_path)
+    _create_prepared_inputs(tmp_path)
+    _complete_checkpoint(tmp_path / "outputs" / "sft")
+    config = _write_config(project, tmp_path, RUN_SMOKE=0)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    local = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "rl"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+    assert local.returncode == 75
+    local_log = calls.read_text()
+    assert "ARG <--search-mode>" in local_log
+    assert "ARG <local>" in local_log
+    assert "ARG <web>" not in local_log
+
+    calls.write_text("")
+    live = _run(
+        [project / "scripts" / "ssh" / "worker.sh", "rl"],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls), "BRAVE_SEARCH_API_KEY": "secret"},
+    )
+    assert live.returncode == 75
+    live_log = calls.read_text()
+    assert "ARG <--search-mode>" in live_log
+    assert "ARG <web>" in live_log
+    assert "ARG <local>" not in live_log
+
+
 def test_custom_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_path: Path) -> None:
     project = _copy_workflow(tmp_path)
     config = _write_config(project, tmp_path, PREPARE_IN_JOB=0, ALLOW_COMBINED_JOB=1)

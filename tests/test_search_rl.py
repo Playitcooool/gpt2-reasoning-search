@@ -47,6 +47,7 @@ def config(tmp_path: Path, **overrides: object) -> SearchRLConfig:
         {"group_size": 1},
         {"max_searches": -1},
         {"max_searches": 4},
+        {"search_mode": "off"},
         {"learning_rate": 0},
         {"kl_coefficient": -0.1},
         {"warmup_fraction": 1.0},
@@ -69,6 +70,21 @@ def config(tmp_path: Path, **overrides: object) -> SearchRLConfig:
 def test_search_rl_config_validation(tmp_path: Path, overrides: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         config(tmp_path, **overrides)
+
+
+def test_web_rl_requires_api_key_before_model_setup(tmp_path: Path, monkeypatch) -> None:
+    import gpt2_reasoning_search.rl as rl_module
+
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def should_not_load_model(*_args, **_kwargs):
+        raise AssertionError("model setup should not run before web-key validation")
+
+    monkeypatch.setattr(rl_module, "GPT2ReasoningModel", should_not_load_model)
+
+    with pytest.raises(ValueError, match="BRAVE_SEARCH_API_KEY"):
+        train_search_rl(config(tmp_path, search_mode="web"))
 
 
 def test_stream_rl_prompts_accepts_schema_and_skips_empty_lines(tmp_path: Path) -> None:
@@ -127,12 +143,16 @@ def result(source_id: str = "doc:1") -> SearchResult:
 
 
 def trace(
-    status: str = "ok", results: list[SearchResult] | None = None, query: str = "query"
+    status: str = "ok",
+    results: list[SearchResult] | None = None,
+    query: str = "query",
+    provider: str | None = None,
 ) -> ToolTraceEntry:
     return ToolTraceEntry(
         call=ToolCall(name="search", arguments=SearchArguments(query=query)),
         status=status,  # type: ignore[arg-type]
         results=results or [],
+        provider=provider,
     )
 
 
@@ -453,23 +473,56 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
             self.closed = 0
             providers.append(self)
 
+    caches = []
+
+    class FakeCache:
+        def __init__(self, path, ttl_seconds) -> None:
+            self.path = path
+            self.ttl_seconds = ttl_seconds
+            self.closed = 0
+            caches.append(self)
+
+        def close(self) -> None:
+            self.closed += 1
+
+    web_providers = []
+
+    class FakeWebProvider:
+        def __init__(self, api_key, *, cache) -> None:
+            self.api_key = api_key
+            self.cache = cache
+            self.closed = 0
+            web_providers.append(self)
+
+        async def aclose(self) -> None:
+            self.closed += 1
+            self.cache.close()
+
     class FakeAgent:
         calls = 0
         requests = []
+        trace_providers: tuple[str, ...] = ()
 
-        def __init__(self, generate, provider) -> None:
+        def __init__(self, generate, provider, web_provider=None) -> None:
             self.generate = generate
             self.provider = provider
+            self.web_provider = web_provider
 
         async def answer(self, request) -> AnswerResponse:
             self.generate("prompt", 512)
             FakeAgent.calls += 1
             FakeAgent.requests.append(request)
             answer = "yes" if FakeAgent.calls % 2 else "no"
-            return response(answer, [], 0)
+            traces = []
+            if FakeAgent.trace_providers:
+                provider_index = (FakeAgent.calls - 1) % len(FakeAgent.trace_providers)
+                traces = [trace(provider=FakeAgent.trace_providers[provider_index])]
+            return response(answer, traces, 0)
 
         async def aclose(self) -> None:
             self.provider.closed += 1
+            if self.web_provider is not None:
+                await self.web_provider.aclose()
 
     judges = []
 
@@ -504,6 +557,8 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
     monkeypatch.setattr(rl_module, "GPT2ReasoningModel", FakeRLModel)
     monkeypatch.setattr(rl_module, "PolicyGenerator", FakePolicyGenerator)
     monkeypatch.setattr(rl_module, "LocalWikipediaSearchProvider", FakeProvider)
+    monkeypatch.setattr(rl_module, "BraveWebSearchProvider", FakeWebProvider)
+    monkeypatch.setattr(rl_module, "SQLiteSearchCache", FakeCache)
     monkeypatch.setattr(rl_module, "SearchAgent", FakeAgent)
     monkeypatch.setattr(rl_module, "QwenRewardJudge", FakeJudge)
     monkeypatch.setattr(rl_module.Tokenizer, "from_file", lambda _path: object())
@@ -609,6 +664,36 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
     assert search_rl_config["judge_revision"] == "a" * 40
     assert search_rl_config["judge_device"] == "cpu"
     assert search_rl_config["reward_weights"]["judge_answer_correctness"] == 0.20
+
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "secret")
+    FakeAgent.trace_providers = ("web", "local-fallback")
+    web_settings = config(
+        tmp_path,
+        checkpoint_directory=checkpoint,
+        prompts_path=prompts,
+        output_directory=tmp_path / "web-output",
+        epochs=1,
+        group_size=2,
+        search_mode="web",
+    )
+    web_final = train_search_rl(web_settings)
+
+    assert web_final == tmp_path / "web-output" / "final"
+    assert len(web_providers) == 1
+    assert web_providers[0].api_key == "secret"
+    assert web_providers[0].closed == 1
+    assert len(caches) == 1
+    assert caches[0].path == tmp_path / "web-output" / "brave-search-cache.sqlite3"
+    assert caches[0].closed == 1
+    web_records = [
+        json.loads(line)
+        for line in (tmp_path / "web-output" / "metrics.jsonl").read_text().splitlines()
+    ]
+    assert web_records
+    assert sum(record["web_searches"] for record in web_records) > 0
+    assert sum(record["local_fallbacks"] for record in web_records) > 0
+    FakeAgent.trace_providers = ()
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
 
     original_perf_counter = rl_module.time.perf_counter
     clock_calls = 0

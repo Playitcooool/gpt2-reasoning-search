@@ -87,14 +87,17 @@ and rejection statistics. Training checkpoints include model, optimizer, schedul
 cursors, and mixture counters.
 
 The worker invokes tokenizer training, pretraining, `sft-tools`, and `rl-search` internally. Search
-RL uses the local index only, the Qwen3.5-2B judge by default, and at most three searches per
-rollout. Set `USE_LLM_JUDGE=0` for the deterministic ablation. Detailed JSONL schemas and advanced
-CLI equivalents are in [the search-RL guide](docs/SEARCH_RL.md).
+RL uses the local index by default, the Qwen3.5-2B judge by default, and at most three searches per
+rollout. Export `BRAVE_SEARCH_API_KEY` immediately before submitting the RL job to enable live Brave
+search with a persistent cache and automatic local fallback when the API is unavailable. Set
+`USE_LLM_JUDGE=0` for the deterministic ablation. Detailed JSONL schemas and advanced CLI
+equivalents are in [the search-RL guide](docs/SEARCH_RL.md).
 
 Search RL is a distinct third stage. It samples groups of online tool trajectories, scores
 verifiable QA outcomes and grounded tool behavior, optimizes only model-generated action tokens,
-and regularizes against a frozen copy of the tool-SFT checkpoint. RL uses local search only; its
-tokens do not alter the audited 70/30 pretraining ratio. See [search RL](docs/SEARCH_RL.md).
+and regularizes against a frozen copy of the tool-SFT checkpoint. RL uses local search by default;
+when a Brave key is exported it can use live search with a cached local fallback. Its tokens do not
+alter the audited 70/30 pretraining ratio. See [search RL](docs/SEARCH_RL.md).
 The CLI also uses a revision-pinned Qwen3.5-2B auxiliary judge by default. Deterministic answer,
 citation, and tool checks remain the primary reward; use `USE_LLM_JUDGE=0` for the ablation.
 

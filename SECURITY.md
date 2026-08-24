@@ -21,10 +21,12 @@ localhost unless an authenticated TLS reverse proxy protects it. Live-search res
 and must not be used for reproducible benchmark numbers; use the frozen local Wikipedia index for
 reported experiments.
 
-Search RL must use the frozen local index and reviewed QA/reward data. Do not place secrets, private
-documents, or live-web results in the RL environment. Deterministic rewards can be exploited; inspect
-high-reward trajectories and require held-out answer, citation, tool-validity, and search-restraint
-gates before deployment.
+Search RL uses the frozen local index and reviewed QA/reward data by default. Exploratory live-web
+RL requires `BRAVE_SEARCH_API_KEY` in the submitting environment, never in a repository file. Treat
+cached live-web results as untrusted data, keep them out of public releases unless their storage and
+content rights have been reviewed, and do not use them for reproducible benchmark numbers.
+Deterministic rewards can be exploited; inspect high-reward trajectories and require held-out answer,
+citation, tool-validity, and search-restraint gates before deployment.
 
 The optional Qwen reward judge adds another attack surface: retrieved text or candidate answers may
 try to instruct the judge, and a small judge can be biased, inconsistent, or reward superficial

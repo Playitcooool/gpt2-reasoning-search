@@ -78,6 +78,7 @@ def test_rl_cli_registers_documented_paths_options_and_safe_retrieval_defaults()
         "epochs": "--epochs",
         "group_size": "--group-size",
         "max_searches": "--max-searches",
+        "search_mode": "--search-mode",
         "learning_rate": "--learning-rate",
         "kl_coefficient": "--kl-coefficient",
         "resume_from": "--resume-from",
@@ -98,6 +99,7 @@ def test_rl_cli_registers_documented_paths_options_and_safe_retrieval_defaults()
     assert parameters["output"].default == Path("checkpoints/search-rl")
     assert parameters["group_size"].default == 4
     assert parameters["max_searches"].default == 3
+    assert parameters["search_mode"].default == "local"
     assert parameters["lexical_only"].default is True
     assert "--lexical-only" in parameters["lexical_only"].opts
     assert "--hybrid-retrieval" in parameters["lexical_only"].secondary_opts
@@ -146,6 +148,9 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
     enabled = CliRunner().invoke(app, base_args)
     disabled = CliRunner().invoke(app, [*base_args, "--no-llm-judge"])
     hybrid = CliRunner().invoke(app, [*base_args, "--hybrid-retrieval", "--no-llm-judge"])
+    invalid_mode = CliRunner().invoke(
+        app, [*base_args, "--search-mode", "invalid", "--no-llm-judge"]
+    )
     invalid_custom = CliRunner().invoke(
         app, [*base_args, "--judge-model", "organization/custom-judge"]
     )
@@ -160,6 +165,9 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
     assert captured[0].enable_dense_retrieval is False
     assert hybrid.exit_code == 0
     assert captured[2].enable_dense_retrieval is True
+    assert invalid_mode.exit_code != 0
+    assert isinstance(invalid_mode.exception, ValueError)
+    assert "RL search_mode must be local, web, or auto" in str(invalid_mode.exception)
     assert invalid_custom.exit_code != 0
     normalized_error = " ".join(strip_ansi(invalid_custom.output).split())
     assert "custom --judge-model requires --judge-revision" in normalized_error
@@ -182,7 +190,9 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
     ):
         assert option in documented_command
     assert "--checkpoint checkpoints/search-rl/final" in documented_command
-    assert "RL uses local search only" in readme
+    normalized_readme = " ".join(readme.split())
+    assert "Search RL uses the local index by default" in normalized_readme
+    assert "RL uses local search only" not in normalized_readme
 
     assert "Only model-generated tokens receive policy gradients" in rl_guide
     assert "frozen copy of the tool-SFT checkpoint" in rl_guide
@@ -191,10 +201,23 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
     assert "RL defaults to bounded BM25 retrieval (`--lexical-only`)" in rl_guide
     assert "Use `--hybrid-retrieval` only after measuring CPU-RAM" in rl_guide
     assert "reranker is disabled by default" in rl_guide
-    assert "Use only the frozen local index for RL" in rl_guide
-    assert "grouped online trajectories against the frozen local index" in architecture
-    assert "grouped online RL against a frozen local" in model_card
-    assert "Search RL must use the frozen local index" in security
+    assert "Use only the frozen local index for RL" not in rl_guide
+    for term in (
+        "By default, RL uses only the frozen local index.",
+        "BRAVE_SEARCH_API_KEY",
+        "--search-mode web",
+        "web_searches",
+        "local_fallbacks",
+    ):
+        assert term in rl_guide
+    normalized_architecture = " ".join(architecture.split())
+    assert "Search RL samples grouped online trajectories" in normalized_architecture
+    assert "Live retrieval calls Brave Search" in architecture
+    assert "grouped online trajectories against the frozen local index. Group-normalized" not in (
+        normalized_architecture
+    )
+    assert "grouped online RL against a frozen local index." not in model_card
+    assert "Search RL must use the frozen local index" not in security
 
 
 def test_search_rl_docs_cover_input_schema_reward_components_and_metrics() -> None:
@@ -272,5 +295,5 @@ def test_rl_evaluation_and_safety_docs_require_held_out_regression_gates() -> No
     assert "Training reward alone is not an evaluation metric" in evaluation
     assert "reward-hacking" in model_card
     assert "high training reward is not evidence of a better model" in model_card
-    assert "Do not place secrets, private" in security
+    assert "never in a repository file" in security
     assert "held-out answer, citation, tool-validity, and search-restraint gates" in security

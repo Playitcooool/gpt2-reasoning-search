@@ -117,12 +117,23 @@ class SearchAgent:
         if mode == "web":
             if self.web_provider is None:
                 raise RuntimeError("requested web search provider is not configured")
-            return (
-                await asyncio.wait_for(
-                    self.web_provider.search(query, top_k), self.search_timeout_seconds
-                ),
-                "web",
-            )
+            try:
+                return (
+                    await asyncio.wait_for(
+                        self.web_provider.search(query, top_k), self.search_timeout_seconds
+                    ),
+                    "web",
+                )
+            except (TimeoutError, RuntimeError) as web_error:
+                try:
+                    return (
+                        await asyncio.wait_for(
+                            self.local_provider.search(query, top_k), self.search_timeout_seconds
+                        ),
+                        "local-fallback",
+                    )
+                except (TimeoutError, RuntimeError):
+                    raise web_error from None
         if mode == "local":
             return (
                 await asyncio.wait_for(
@@ -130,6 +141,7 @@ class SearchAgent:
                 ),
                 "local",
             )
+        local: list[SearchResult] = []
         try:
             local = await asyncio.wait_for(
                 self.local_provider.search(query, top_k), self.search_timeout_seconds
@@ -140,12 +152,15 @@ class SearchAgent:
             if self.web_provider is None:
                 raise
         assert self.web_provider is not None
-        return (
-            await asyncio.wait_for(
-                self.web_provider.search(query, top_k), self.search_timeout_seconds
-            ),
-            "web",
-        )
+        try:
+            return (
+                await asyncio.wait_for(
+                    self.web_provider.search(query, top_k), self.search_timeout_seconds
+                ),
+                "web",
+            )
+        except (TimeoutError, RuntimeError):
+            return local, "local-fallback"
 
     async def aclose(self) -> None:
         closed: set[int] = set()

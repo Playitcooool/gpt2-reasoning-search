@@ -379,12 +379,18 @@ run_rl() {
   if [[ "${RL_LEXICAL_ONLY:-1}" == "0" ]]; then
     retrieval_args=(--hybrid-retrieval)
   fi
+  local search_args=(--search-mode local)
+  if [[ -n "${BRAVE_SEARCH_API_KEY:-}" ]]; then
+    search_args=(--search-mode web)
+    echo "Live Brave search enabled for RL; cached results and local fallback protect this run."
+  fi
   local args=(uv run --locked gpt2-reasoning-search rl-search \
     --checkpoint "$SFT_OUTPUT" --tokenizer-path "$TOKENIZER_PATH" \
     --prompts "$RL_PROMPTS" --index "$WIKI_INDEX" --output "$RL_OUTPUT" \
     --epochs "$RL_EPOCHS" --time-budget-hours "$RL_HOURS" \
     --group-size "$RL_GROUP_SIZE" --max-searches 3 \
     "${retrieval_args[@]}" \
+    "${search_args[@]}" \
     "${judge_args[@]}")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi
   "${args[@]}"

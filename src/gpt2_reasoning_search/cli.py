@@ -210,6 +210,9 @@ def rl_search_command(
     time_budget_hours: float = typer.Option(7.5, min=0.1),
     group_size: int = typer.Option(4, min=2),
     max_searches: int = typer.Option(3, min=0, max=3),
+    search_mode: str = typer.Option(
+        "local", help="local, web (with Brave fallback), or auto (local then Brave)"
+    ),
     learning_rate: float = typer.Option(1e-6, min=1e-9),
     kl_coefficient: float = typer.Option(0.02, min=0.0),
     resume_from: Path | None = typer.Option(None, exists=True),
@@ -243,6 +246,7 @@ def rl_search_command(
         time_budget_hours=time_budget_hours,
         group_size=group_size,
         max_searches=max_searches,
+        search_mode=search_mode,
         learning_rate=learning_rate,
         kl_coefficient=kl_coefficient,
         resume_from=resume_from,

@@ -24,6 +24,7 @@ from gpt2_reasoning_search.web_search import (
     BraveWebSearchProvider,
     SQLiteSearchCache,
     WebPageFetcher,
+    WebSearchUnavailable,
     validate_public_url,
 )
 
@@ -350,6 +351,30 @@ def test_brave_deduplicates_stable_ids_caches_and_closes(tmp_path: Path) -> None
     asyncio.run(client.aclose())
 
 
+def test_brave_cache_is_checked_before_unavailable_latch(tmp_path: Path) -> None:
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise AssertionError("a cached query must not call Brave")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    cache = SQLiteSearchCache(tmp_path / "cache.sqlite3")
+    cached = _result("cached")
+    cache.put(json.dumps(["brave", "test query", 2]), [cached])
+    provider = BraveWebSearchProvider(
+        "secret", client=client, cache=cache, page_fetcher=FakePageFetcher()
+    )
+    provider.unavailable_reason = "Brave is unavailable"
+
+    results = asyncio.run(provider.search(" Test   Query ", top_k=2))
+
+    assert results == [cached]
+    assert requests == []
+    asyncio.run(provider.aclose())
+    asyncio.run(client.aclose())
+
+
 @pytest.mark.parametrize("statuses", [[429, 200], [503, 200]])
 def test_brave_retries_rate_limits_and_server_errors(monkeypatch, statuses) -> None:
     attempts = []
@@ -373,16 +398,25 @@ def test_brave_retries_rate_limits_and_server_errors(monkeypatch, statuses) -> N
 
 
 def test_brave_exhausted_retries_raises_runtime_error(monkeypatch) -> None:
+    attempts = []
+
     async def no_sleep(_delay):
         return None
 
     monkeypatch.setattr("gpt2_reasoning_search.web_search.asyncio.sleep", no_sleep)
-    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(503)))
+    def handler(_request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(503)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = BraveWebSearchProvider(
         "key", client=client, page_fetcher=FakePageFetcher(), retries=1
     )
-    with pytest.raises(RuntimeError, match="after retries"):
+    with pytest.raises(WebSearchUnavailable, match="after retries"):
         asyncio.run(provider.search("query"))
+    with pytest.raises(WebSearchUnavailable, match="disabled for this run"):
+        asyncio.run(provider.search("another query"))
+    assert len(attempts) == 1
     asyncio.run(client.aclose())
 
 
