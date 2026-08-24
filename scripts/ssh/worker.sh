@@ -118,6 +118,11 @@ wiki_index_ready() {
     && -f "$WIKI_INDEX/retrieval-manifest.json" ]]
 }
 
+trajectory_format_is_current() {
+  [[ -s "$TRAJECTORIES" ]] || return 1
+  grep -Fq 'You may search when current or obscure facts are required.' "$TRAJECTORIES"
+}
+
 remove_obsolete_dense_index() {
   local dense_artifact="$WIKI_INDEX/dense.usearch"
   if [[ -f "$dense_artifact" ]]; then
@@ -255,8 +260,9 @@ run_prepare() {
     "${args[@]}"
   fi
   remove_obsolete_dense_index
-  if [[ ! -s "$TRAJECTORIES" ]]; then
+  if ! trajectory_format_is_current; then
     require_nonempty_file "$GROUNDED_QUESTIONS"
+    echo "Generating current grounded tool-SFT trajectories."
     uv run --locked gpt2-reasoning-search make-trajectories "$GROUNDED_QUESTIONS" \
       --output "$TRAJECTORIES"
   fi

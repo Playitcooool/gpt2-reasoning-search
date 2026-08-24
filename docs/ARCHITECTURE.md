@@ -17,12 +17,12 @@
    fused AdamW, token-based cosine decay, gradient accumulation, and optional `torch.compile`.
 6. Tool SFT streams JSONL through a deterministic shuffle buffer, dynamically pads batches, masks
    user prompts and retrieved observations, and saves full resumable checkpoints.
-7. Search RL samples grouped online trajectories against the frozen local index by default.
-   An explicitly configured Brave provider enables exploratory live-web trajectories, cached locally
-   and downgraded to local retrieval when unavailable. Group-normalized rewards train only generated
-   tokens, while a frozen tool-SFT reference supplies KL regularization. A pinned local Qwen3.5-2B
-   model adds a bounded semantic score; deterministic outcomes and source provenance remain the
-   primary rewards.
+7. Search RL samples grouped online trajectories against Brave when a key is configured, caching
+   results locally and downgrading to BM25 only when Brave is unavailable. A required-lookup answer
+   must cite returned evidence matching an accepted source before it earns correctness or judge
+   reward. Group-normalized rewards train only generated tokens, while a frozen tool-SFT reference
+   supplies KL regularization. A pinned local Qwen3.5-2B model adds a bounded semantic score;
+   deterministic outcomes and source provenance remain the primary rewards.
 
 ## Retrieval path
 

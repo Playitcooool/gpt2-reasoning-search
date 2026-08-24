@@ -24,9 +24,13 @@ def encode_sft_document(
     encoded = tokenizer.encode(text)
     ids = encoded.ids[:max_length]
     labels = ids.copy()
-    answer_marker = text.find("<|tool_call|>")
+    # TOOL_INSTRUCTION deliberately documents the action tags.  Only the markers after the
+    # concrete problem begin the supervised completion; the documented examples are fixed context.
+    problem_marker = text.find("<|problem|>")
+    completion_start = problem_marker if problem_marker >= 0 else 0
+    answer_marker = text.find("<|tool_call|>", completion_start)
     if answer_marker < 0:
-        answer_marker = text.find("<|reasoning|>")
+        answer_marker = text.find("<|reasoning|>", completion_start)
     spans = []
     if answer_marker > 0:
         spans.append((0, answer_marker))

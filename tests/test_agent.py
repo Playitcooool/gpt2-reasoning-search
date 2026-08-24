@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from gpt2_reasoning_search.agent import (
+    TOOL_INSTRUCTION,
     SearchAgent,
     format_tool_results,
     parse_final_response,
@@ -215,10 +216,22 @@ def test_local_web_and_auto_provider_selection_and_fallback() -> None:
     local, web, response = asyncio.run(exercise("web", [_result("local:0")]))
     assert local.calls == [] and web.calls == [("fact", 5)]
     assert response.tool_trace[0].provider == "web"
-
     local, web, response = asyncio.run(exercise("auto", []))
     assert local.calls == [("fact", 5)] and web.calls == [("fact", 5)]
     assert response.tool_trace[0].provider == "web"
+
+
+def test_agent_prompt_uses_shared_tool_instruction() -> None:
+    prompts: list[str] = []
+
+    def generate(prompt: str, _limit: int) -> tuple[str, int, int]:
+        prompts.append(prompt)
+        return "<|reasoning|>No lookup.<|answer|>Answer.", 1, 1
+
+    agent = SearchAgent(generate, RecordingProvider())
+    asyncio.run(agent.answer(AnswerRequest(query="question", search_mode="off")))
+
+    assert prompts == [TOOL_INSTRUCTION + "\n<|problem|>\nquestion\n"]
 
 
 @pytest.mark.parametrize(

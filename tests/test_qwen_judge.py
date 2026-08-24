@@ -278,7 +278,7 @@ def test_invalid_judge_score_adds_zero_and_valid_score_uses_configured_weights()
     )
     weights = RewardWeights(**zero_weights)
     response = answer_response().model_copy(update={"answer": "wrong"})
-    row = {"answer": "reference", "supporting_ids": []}
+    row = {"answer": "reference", "supporting_ids": [], "search_required": False}
 
     valid = score_search_reward(
         row,

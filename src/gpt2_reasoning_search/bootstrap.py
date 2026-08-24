@@ -216,6 +216,7 @@ def _question_rows(articles: Iterable[dict[str, str]]) -> Iterator[dict]:
             "query": article["title"],
             "search_required": True,
             "supporting_ids": [result_id],
+            "supporting_sources": [{"id": result_id, "url": article["url"]}],
             "evidence": [evidence],
             "reasoning": (
                 "Search the local encyclopedia, inspect the returned article, and cite it."

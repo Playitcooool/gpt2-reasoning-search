@@ -26,7 +26,8 @@ from .evaluation import exact_match, strip_citation_markers, token_f1
 from .judge import JudgeScore, QwenRewardJudge
 from .model import GPT2ReasoningModel
 from .retrieval import LocalWikipediaSearchProvider
-from .schemas import AnswerRequest, AnswerResponse
+from .schemas import AnswerRequest, AnswerResponse, SearchResult
+from .search import canonicalize_url
 from .train import optimizer_parameter_groups, warmup_cosine_factor
 from .web_search import BraveWebSearchProvider, SQLiteSearchCache
 
@@ -40,6 +41,8 @@ class RewardWeights:
     citation_validity: float = 0.20
     valid_tool_calls: float = 0.10
     query_recovery: float = 0.10
+    grounded_search: float = 0.35
+    missing_required_grounding: float = -0.75
     unnecessary_search: float = -0.10
     invalid_tool_call: float = -0.25
     search_cost: float = -0.02
@@ -202,9 +205,111 @@ def stream_rl_prompts(path: Path) -> Iterator[dict[str, Any]]:
                 isinstance(value, str) for value in supporting
             ):
                 raise ValueError(f"RL prompt line {line_number} has invalid supporting_ids")
+            supporting_urls = row.get("supporting_urls", [])
+            if not isinstance(supporting_urls, list) or not all(
+                isinstance(value, str) and value.strip() for value in supporting_urls
+            ):
+                raise ValueError(f"RL prompt line {line_number} has invalid supporting_urls")
+            supporting_sources = row.get("supporting_sources", [])
+            if not isinstance(supporting_sources, list) or not all(
+                isinstance(source, dict)
+                and any(
+                    isinstance(source.get(field), str) and source[field].strip()
+                    for field in ("id", "url")
+                )
+                and all(
+                    field in {"id", "url"} and isinstance(value, str) and value.strip()
+                    for field, value in source.items()
+                )
+                for source in supporting_sources
+            ):
+                raise ValueError(f"RL prompt line {line_number} has invalid supporting_sources")
             if "search_required" in row and not isinstance(row["search_required"], bool):
                 raise ValueError(f"RL prompt line {line_number} has invalid search_required")
             yield row
+
+
+def _url_key(url: str) -> str | None:
+    """Normalize one source URL for provider-independent evidence matching."""
+    try:
+        normalized = canonicalize_url(url)
+    except (TypeError, ValueError):
+        return None
+    return f"url:{normalized}" if normalized else None
+
+
+def _result_keys(result: SearchResult) -> frozenset[str]:
+    keys = {f"id:{result.id}"}
+    if url_key := _url_key(result.url):
+        keys.add(url_key)
+    return frozenset(keys)
+
+
+def _support_targets(row: dict[str, Any]) -> tuple[frozenset[str], ...]:
+    """Return disjunctive source identities for matching local or Brave evidence.
+
+    Each target may identify the same source by its frozen-index ID and canonical URL.  That makes
+    a local ``wiki-page:...`` result and a Brave result for the corresponding public page equally
+    eligible evidence without double-counting the source in citation recall.
+    """
+    targets: list[frozenset[str]] = []
+    for source in row.get("supporting_sources", []):
+        keys = set()
+        if isinstance(source.get("id"), str) and source["id"].strip():
+            keys.add(f"id:{source['id']}")
+        if isinstance(source.get("url"), str) and (url_key := _url_key(source["url"])):
+            keys.add(url_key)
+        if keys:
+            targets.append(frozenset(keys))
+    if targets:
+        return tuple(targets)
+
+    supporting_ids = {str(value) for value in row.get("supporting_ids", [])}
+    supporting_urls = {
+        key
+        for value in row.get("supporting_urls", [])
+        if isinstance(value, str)
+        if (key := _url_key(value)) is not None
+    }
+    evidence_by_id: dict[str, str] = {}
+    for item in row.get("evidence", []):
+        if not isinstance(item, dict):
+            continue
+        identifier = item.get("id")
+        url = item.get("url")
+        if isinstance(identifier, str) and isinstance(url, str) and (url_key := _url_key(url)):
+            evidence_by_id[identifier] = url_key
+
+    paired_urls: set[str] = set()
+    for identifier in sorted(supporting_ids):
+        keys = {f"id:{identifier}"}
+        if url_key := evidence_by_id.get(identifier):
+            keys.add(url_key)
+            paired_urls.add(url_key)
+        targets.append(frozenset(keys))
+    for url_key in sorted(supporting_urls - paired_urls):
+        targets.append(frozenset({url_key}))
+    return tuple(targets)
+
+
+def _matches_target(result: SearchResult, target: frozenset[str]) -> bool:
+    return bool(_result_keys(result) & target)
+
+
+def _supported_citation_ids(
+    claimed_ids: Sequence[str],
+    available: dict[str, SearchResult],
+    targets: Sequence[frozenset[str]],
+) -> set[str]:
+    return {
+        source_id
+        for source_id in claimed_ids
+        if source_id in available
+        and (
+            not targets
+            or any(_matches_target(available[source_id], target) for target in targets)
+        )
+    }
 
 
 def score_search_reward(
@@ -216,30 +321,44 @@ def score_search_reward(
 ) -> RewardResult:
     weights = weights or RewardWeights()
     claimed_ids = list(dict.fromkeys(re.findall(r"<\|citation\|>([^\s<]+)", raw_final_output)))
-    returned_ids = {
-        result.id for trace_entry in response.tool_trace for result in trace_entry.results
+    available = {
+        result.id: result for trace_entry in response.tool_trace for result in trace_entry.results
     }
-    supporting_ids = set(map(str, row.get("supporting_ids", [])))
-    grounded_claims = set(claimed_ids) & returned_ids
+    returned_ids = set(available)
+    targets = _support_targets(row)
+    grounded_claims = _supported_citation_ids(claimed_ids, available, targets)
     answer = strip_citation_markers(response.answer, claimed_ids)
-    answer_exact = exact_match(answer, str(row["answer"]))
-    answer_f1 = token_f1(answer, str(row["answer"]))
-    if supporting_ids:
-        citation_precision = (
-            len(grounded_claims & supporting_ids) / len(claimed_ids) if claimed_ids else 0.0
-        )
-        citation_recall = len(grounded_claims & supporting_ids) / len(supporting_ids)
+    raw_answer_exact = exact_match(answer, str(row["answer"]))
+    raw_answer_f1 = token_f1(answer, str(row["answer"]))
+    search_required = bool(row.get("search_required", True))
+    searched = response.searches_used > 0
+    search_succeeded = any(
+        entry.status == "ok" and entry.results for entry in response.tool_trace
+    )
+    evidence_grounded = search_succeeded and bool(grounded_claims)
+    answer_is_eligible = not search_required or evidence_grounded
+    answer_exact = raw_answer_exact * float(answer_is_eligible)
+    answer_f1 = raw_answer_f1 * float(answer_is_eligible)
+    if targets:
+        citation_precision = len(grounded_claims) / len(claimed_ids) if claimed_ids else 0.0
+        citation_recall = sum(
+            any(
+                source_id in available and _matches_target(available[source_id], target)
+                for source_id in claimed_ids
+            )
+            for target in targets
+        ) / len(targets)
     else:
         citation_precision = citation_recall = 0.0
     citation_validity = (
-        len(set(claimed_ids) & returned_ids) / len(claimed_ids) if claimed_ids else 1.0
+        len(set(claimed_ids) & returned_ids) / len(claimed_ids)
+        if claimed_ids
+        else float(not search_required)
     )
     attempted = len(response.tool_trace)
     valid = sum(entry.status in {"ok", "empty", "error"} for entry in response.tool_trace)
-    valid_rate = valid / attempted if attempted else 1.0
+    valid_rate = valid / attempted if attempted else float(not search_required)
     invalid = sum(entry.status in {"invalid", "rejected"} for entry in response.tool_trace)
-    search_required = bool(row.get("search_required", True))
-    searched = response.searches_used > 0
     unnecessary = float(searched and not search_required)
     valid_entries = [
         entry
@@ -247,16 +366,25 @@ def score_search_reward(
         if entry.call is not None and entry.status in {"ok", "empty", "error"}
     ]
     recovered = 0.0
-    if len(valid_entries) > 1 and answer_exact == 1.0:
-        first_ids = {result.id for result in valid_entries[0].results}
+    if len(valid_entries) > 1 and raw_answer_exact == 1.0 and answer_is_eligible:
         first_failed = valid_entries[0].status != "ok" or (
-            bool(supporting_ids) and not first_ids & supporting_ids
+            bool(targets)
+            and not any(
+                _matches_target(result, target)
+                for result in valid_entries[0].results
+                for target in targets
+            )
         )
         later_succeeded = any(
             entry.status == "ok"
             and bool(entry.results)
             and (
-                not supporting_ids or bool({result.id for result in entry.results} & supporting_ids)
+                not targets
+                or any(
+                    _matches_target(result, target)
+                    for result in entry.results
+                    for target in targets
+                )
             )
             for entry in valid_entries[1:]
         )
@@ -273,17 +401,27 @@ def score_search_reward(
         "citation_validity": citation_validity,
         "valid_tool_calls": valid_rate,
         "query_recovery": recovered,
+        "grounded_search": float(search_required and evidence_grounded),
+        "missing_required_grounding": float(search_required and not evidence_grounded),
         "unnecessary_search": unnecessary,
         "invalid_tool_call": float(invalid),
-        "search_cost": float(response.searches_used),
+        "search_cost": float(
+            max(response.searches_used - 1, 0) if search_required else response.searches_used
+        ),
         "judge_answer_correctness": (
-            judge_score.answer_correctness if judge_score and judge_score.valid else 0.0
+            judge_score.answer_correctness
+            if judge_score and judge_score.valid and answer_is_eligible
+            else 0.0
         ),
         "judge_evidence_support": (
-            judge_score.evidence_support if judge_score and judge_score.valid else 0.0
+            judge_score.evidence_support
+            if judge_score and judge_score.valid and answer_is_eligible
+            else 0.0
         ),
         "judge_search_quality": (
-            judge_score.search_quality if judge_score and judge_score.valid else 0.0
+            judge_score.search_quality
+            if judge_score and judge_score.valid and answer_is_eligible
+            else 0.0
         ),
         "judge_valid": float(bool(judge_score and judge_score.valid)),
     }

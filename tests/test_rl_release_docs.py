@@ -222,7 +222,7 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
         assert option in documented_command
     assert "--checkpoint checkpoints/search-rl/final" in documented_command
     normalized_readme = " ".join(readme.split())
-    assert "Search RL uses the local index by default" in normalized_readme
+    assert "RL uses Brave as its knowledge source" in normalized_readme
     assert "RL uses local search only" not in normalized_readme
 
     assert "Only model-generated tokens receive policy gradients" in rl_guide
@@ -232,14 +232,15 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
     assert "There is no dense-vector index or reranker" in rl_guide
     assert "compact local BM25 index" in rl_guide
     assert "Use only the frozen local index for RL" not in rl_guide
+    normalized_guide = " ".join(rl_guide.split())
     for term in (
-        "The frozen local index is the default for RL.",
+        "Brave when live web search is configured",
         "BRAVE_SEARCH_API_KEY",
         "--search-mode web",
         "web_searches",
         "local_fallbacks",
     ):
-        assert term in rl_guide
+        assert term in normalized_guide
     normalized_architecture = " ".join(architecture.split())
     assert "Search RL samples grouped online trajectories" in normalized_architecture
     assert "query -> Brave Search -> fetched, sanitized evidence" in architecture
@@ -253,8 +254,9 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
 def test_search_rl_docs_cover_input_schema_reward_components_and_metrics() -> None:
     guide = (ROOT / "docs" / "SEARCH_RL.md").read_text()
 
-    for field in ("question", "answer", "supporting_ids", "search_required"):
+    for field in ("question", "answer", "supporting_sources", "search_required"):
         assert f'"{field}"' in guide
+    assert "supporting_ids" in guide
     assert "`id` is optional" in guide
     for term in (
         "answer exact match and token F1",
@@ -264,7 +266,7 @@ def test_search_rl_docs_cover_input_schema_reward_components_and_metrics() -> No
         "query recovery",
         "unnecessary searches",
         "invalid/duplicate calls",
-        "each search attempt",
+        "searches beyond the first necessary lookup",
     ):
         assert term in guide
     for metric in (

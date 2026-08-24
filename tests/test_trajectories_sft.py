@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from gpt2_reasoning_search.agent import TOOL_INSTRUCTION
 from gpt2_reasoning_search.schemas import SearchResult
 from gpt2_reasoning_search.sft import (
     _shuffle_buffer,
@@ -43,7 +44,7 @@ def test_trajectory_document_with_search_contains_call_evidence_and_citation() -
         reasoning="The evidence states the count.",
     )
 
-    assert document.startswith("<|problem|>\nHow many moons")
+    assert document.startswith(TOOL_INSTRUCTION + "\n<|problem|>\nHow many moons")
     assert '<|tool_call|>{"name":"search"' in document
     assert '"top_k":1' in document
     assert "UNTRUSTED SEARCH EVIDENCE" in document
@@ -60,8 +61,12 @@ def test_no_search_trajectory_omits_all_tool_and_citation_markup() -> None:
         reasoning="Add two and two.",
     )
 
-    assert document == ("<|problem|>\nWhat is 2 + 2?\n<|reasoning|>Add two and two.<|answer|>4")
-    assert "<|tool_" not in document and "<|citation|>" not in document
+    assert document == (
+        TOOL_INSTRUCTION
+        + "\n<|problem|>\nWhat is 2 + 2?\n<|reasoning|>Add two and two.<|answer|>4"
+    )
+    trajectory_body = document.split("<|problem|>", 1)[1]
+    assert "<|tool_" not in trajectory_body and "<|citation|>" not in trajectory_body
 
 
 def test_generate_and_stream_trajectories_round_trip_jsonl(tmp_path: Path) -> None:
@@ -86,8 +91,8 @@ def test_generate_and_stream_trajectories_round_trip_jsonl(tmp_path: Path) -> No
 
     assert len(loaded) == 2
     assert all(set(row) == {"text"} for row in loaded)
-    assert "<|tool_call|>" not in loaded[0]["text"]
-    assert "<|tool_call|>" in loaded[1]["text"]
+    assert "<|tool_call|>" not in loaded[0]["text"].split("<|problem|>", 1)[1]
+    assert "<|tool_call|>" in loaded[1]["text"].split("<|problem|>", 1)[1]
 
 
 def test_trajectory_generation_failure_preserves_previous_output(tmp_path: Path) -> None:
@@ -103,6 +108,37 @@ def test_trajectory_generation_failure_preserves_previous_output(tmp_path: Path)
 
     assert output.read_text() == "previous\n"
     assert not list(tmp_path.glob("*.partial"))
+
+
+def test_search_required_trajectory_requires_evidence_and_optional_can_skip_search(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "trajectories.jsonl"
+    with pytest.raises(ValueError, match="search-required"):
+        generate_trajectories(
+            [
+                {
+                    "question": "Current?",
+                    "answer": "Answer",
+                    "search_required": True,
+                    "query": "current",
+                    "evidence": [],
+                }
+            ],
+            output,
+        )
+
+    assert generate_trajectories(
+        [
+            {
+                "question": "Stable?",
+                "answer": "Answer",
+                "search_required": False,
+                "reasoning": "No lookup is needed.",
+            }
+        ],
+        output,
+    ) == 1
 
 
 def test_sft_masks_prompt_and_tool_observation_but_trains_actions(tmp_path: Path) -> None:
@@ -121,9 +157,12 @@ def test_sft_masks_prompt_and_tool_observation_but_trains_actions(tmp_path: Path
 
     ids, labels = encode_sft_document(tokenizer, document, max_length=2_048)
     encoded = tokenizer.encode(document)
-    prompt_end = document.index("<|tool_call|>")
-    result_start = document.index("<|tool_result|>")
-    result_end = document.index("<|end_tool_result|>") + len("<|end_tool_result|>")
+    instruction_end = document.index("<|problem|>")
+    prompt_end = document.index("<|tool_call|>", instruction_end)
+    result_start = document.index("<|tool_result|>", prompt_end)
+    result_end = document.index("<|end_tool_result|>", result_start) + len(
+        "<|end_tool_result|>"
+    )
     prompt_tokens = [
         index
         for index, (start, end) in enumerate(encoded.offsets)
@@ -146,6 +185,12 @@ def test_sft_masks_prompt_and_tool_observation_but_trains_actions(tmp_path: Path
     ]
 
     assert ids == encoded.ids
+    instruction_tokens = [
+        index
+        for index, (start, end) in enumerate(encoded.offsets)
+        if start < instruction_end and end > start
+    ]
+    assert instruction_tokens and all(labels[index] == -100 for index in instruction_tokens)
     assert prompt_tokens and all(labels[index] == -100 for index in prompt_tokens)
     assert result_tokens and all(labels[index] == -100 for index in result_tokens)
     assert action_tokens and all(labels[index] != -100 for index in action_tokens)
@@ -154,6 +199,7 @@ def test_sft_masks_prompt_and_tool_observation_but_trains_actions(tmp_path: Path
 
 def test_sft_no_search_masks_problem_before_reasoning(tmp_path: Path) -> None:
     document = trajectory_document("Question?", "Answer.", None, [], "Reasoning.")
+    assert document.startswith(TOOL_INSTRUCTION + "\n<|problem|>")
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(document)
     tokenizer = train_tokenizer(
@@ -161,7 +207,7 @@ def test_sft_no_search_masks_problem_before_reasoning(tmp_path: Path) -> None:
     )
     _, labels = encode_sft_document(tokenizer, document, max_length=512)
     encoded = tokenizer.encode(document)
-    reasoning_start = document.index("<|reasoning|>")
+    reasoning_start = document.index("<|reasoning|>", document.index("<|problem|>"))
 
     for index, (start, end) in enumerate(encoded.offsets):
         if start < reasoning_start and end > 0:
@@ -180,7 +226,7 @@ def test_multi_step_reformulated_trajectory_and_three_search_cap() -> None:
         "Combine both sources.",
     )
 
-    assert document.count("<|tool_call|>") == 2
+    assert document.split("<|problem|>", 1)[1].count("<|tool_call|>") == 2
     assert "broad query" in document and "reformulated query" in document
     assert document.endswith("<|citation|>earth:0 <|citation|>moon:0")
     with pytest.raises(ValueError, match="at most three"):

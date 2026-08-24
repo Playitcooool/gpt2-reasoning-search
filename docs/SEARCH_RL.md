@@ -5,9 +5,10 @@ tool calls, query reformulation, citations, and final answers while treating pro
 observations as fixed environment state.
 
 The implementation is GRPO-style rather than a complete reproduction of PPO/GRPO. For each QA
-prompt it samples a group of fresh on-policy trajectories, executes calls against the frozen local
-Wikipedia index, scores each complete trajectory, normalizes rewards within the group, and performs
-one policy update. It does not reuse a rollout for multiple clipped PPO epochs.
+prompt it samples a group of fresh on-policy trajectories, executes calls against Brave when live
+web search is configured (with local BM25 only as outage fallback), scores each complete trajectory,
+normalizes rewards within the group, and performs one policy update. It does not reuse a rollout for
+multiple clipped PPO epochs.
 
 For group rewards `r_i`, advantages are:
 
@@ -28,14 +29,19 @@ RL JSONL rows require:
   "id": "question-001",
   "question": "Which city ...?",
   "answer": "Paris",
-  "supporting_ids": ["wiki-page:3"],
+  "supporting_sources": [
+    {"id": "wiki-page:3", "url": "https://en.wikipedia.org/wiki/Paris"}
+  ],
   "search_required": true
 }
 ```
 
-`id` is optional. `supporting_ids` should contain stable chunk identifiers from the exact frozen
-index. Questions without a required lookup set `search_required` to `false`; keep them in the mix to
-teach search restraint. Do not use evaluation questions for RL.
+`id` is optional. Each `supporting_sources` object identifies one accepted source. It may contain an
+index `id`, a canonical public `url`, or both. When both identify the same source, either a local
+Wikipedia result or a Brave result for that URL can satisfy the target. Legacy `supporting_ids` and
+`supporting_urls` lists are also accepted, but paired `supporting_sources` avoid double-counting.
+Questions without a required lookup set `search_required` to `false`; keep them in the mix to teach
+search restraint. Do not use evaluation questions for RL.
 
 ## Reward
 
@@ -46,7 +52,9 @@ The default scalar reward combines:
 - citation validity against results actually returned in the trajectory;
 - valid tool-call rate;
 - genuine query recovery after a failed/non-supporting first retrieval;
-- penalties for unnecessary searches, invalid/duplicate calls, and each search attempt.
+- a bonus for a successful, correctly cited search on lookup-required questions;
+- penalties for missing required grounding, unnecessary searches, invalid/duplicate calls, and
+  searches beyond the first necessary lookup;
 - bounded Qwen3.5-2B scores for answer correctness, evidence support, and search quality.
 
 Fabricated IDs cannot earn citation-support credit, even if they coincidentally match a gold ID,
@@ -55,6 +63,12 @@ a later supporting lookup, and a correct answer. Every component, total reward, 
 gradient norm, action-token count, and learning rate is written to `metrics.jsonl`.
 Judge latency and valid-output rate are recorded so its H100 cost and formatting reliability remain
 visible.
+
+For `search_required: true`, exact-match, F1, and all Qwen judge components are **gated** on a
+successful search plus a citation to a returned result that matches an accepted supporting source.
+An answer from model memory alone therefore receives a missing-grounding penalty even if its text is
+correct. The first required search is free; only further searches incur the per-search cost. This is
+the central incentive: retrieve evidence, cite it, then answer from it.
 
 The LLM score is auxiliary: its combined maximum weight is 0.40, while exact-answer, citation,
 and tool provenance checks remain authoritative. An invalid judge response earns zero judge reward
@@ -94,6 +108,15 @@ The revision-pinned Qwen judge is enabled by default in the CLI. Use `--no-llm-j
 deterministic-only ablation; changing `--judge-model` also requires an explicit pinned
 `--judge-revision`.
 
+## SFT alignment
+
+Tool SFT and RL use the same fixed `TOOL_INSTRUCTION`, JSON `search` call grammar, untrusted-result
+wrapper, `<|reasoning|>`, `<|answer|>`, and returned-source citation format. SFT masks that fixed
+context and all retrieved evidence, and trains only model actions: tool calls, query reformulations,
+reasoning, answers, and citations. Its prepared trajectories use pinned local evidence so they can be
+audited and regenerated without consuming a web API. RL is what adapts that learned interface to
+live Brave results.
+
 After pulling an update on an SSH server, run `./train-ssh setup` once before RL. It synchronizes the
 locked Qwen runtime, including the Pillow and Torchvision components required by this multimodal
 model; do not install them separately with system `pip`.
@@ -115,8 +138,7 @@ scheduler, RNG, epoch, prompt cursor, rollout count, and action-token count resu
 
 ## Safety and evaluation
 
-The frozen local index is the default for RL. Live web content makes rewards non-stationary and
-introduces unreviewed text into optimization; use it only for an explicitly exploratory run and keep
+Live web content makes rewards non-stationary and introduces unreviewed text into optimization; keep
 the cached evidence and provider-usage metrics. Run matched held-out evaluations for tool SFT versus
 search RL, including search-off cases. Reject a checkpoint that improves reward while degrading
 held-out answer accuracy, citation validity, language quality, or unnecessary-search rate; this is

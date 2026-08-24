@@ -90,6 +90,7 @@ def test_stream_rl_prompts_accepts_schema_and_skips_empty_lines(tmp_path: Path) 
     path = tmp_path / "prompts.jsonl"
     path.write_text(
         '\n{"question":"Where?","answer":"There","supporting_ids":["doc:1"],'
+        '"supporting_sources":[{"id":"doc:1","url":"https://example.test/doc"}],'
         '"search_required":true}\n'
     )
 
@@ -98,6 +99,9 @@ def test_stream_rl_prompts_accepts_schema_and_skips_empty_lines(tmp_path: Path) 
             "question": "Where?",
             "answer": "There",
             "supporting_ids": ["doc:1"],
+            "supporting_sources": [
+                {"id": "doc:1", "url": "https://example.test/doc"}
+            ],
             "search_required": True,
         }
     ]
@@ -109,6 +113,10 @@ def test_stream_rl_prompts_accepts_schema_and_skips_empty_lines(tmp_path: Path) 
         ('{"answer":"x"}\n', "missing question"),
         ('{"question":"q"}\n', "missing answer"),
         ('{"question":"q","answer":"a","supporting_ids":"bad"}\n', "supporting_ids"),
+        (
+            '{"question":"q","answer":"a","supporting_sources":[{"url":4}]}\n',
+            "supporting_sources",
+        ),
         ('{"question":"q","answer":"a","search_required":"false"}\n', "search_required"),
     ],
 )
@@ -139,6 +147,10 @@ def result(source_id: str = "doc:1") -> SearchResult:
         content="support",
         provider="local",
     )
+
+
+def result_with_url(source_id: str, url: str, provider: str = "web") -> SearchResult:
+    return result(source_id).model_copy(update={"url": url, "provider": provider})
 
 
 def trace(
@@ -187,15 +199,140 @@ def test_search_reward_exact_f1_supported_valid_citation_and_search_cost() -> No
         "citation_validity": 1.0,
         "valid_tool_calls": 1.0,
         "query_recovery": 0.0,
+        "grounded_search": 1.0,
+        "missing_required_grounding": 0.0,
         "unnecessary_search": 0.0,
         "invalid_tool_call": 0.0,
-        "search_cost": 1.0,
+        "search_cost": 0.0,
         "judge_answer_correctness": 0.0,
         "judge_evidence_support": 0.0,
         "judge_search_quality": 0.0,
         "judge_valid": 0.0,
     }
-    assert scored.total == pytest.approx(1.93)
+    assert scored.total == pytest.approx(2.30)
+
+
+def test_required_answer_and_judge_credit_requires_a_supported_returned_citation() -> None:
+    row = {
+        "answer": "Paris",
+        "supporting_ids": ["wiki:1"],
+        "search_required": True,
+        "supporting_sources": [
+            {"id": "wiki:1", "url": "https://example.test/paris"}
+        ],
+    }
+    scored = score_search_reward(
+        row,
+        response("Paris", [trace(results=[result("unrelated")])], 1),
+        "<|answer|>Paris",
+        judge_score=JudgeScore(1.0, 1.0, 1.0, valid=True),
+    )
+
+    assert scored.components["answer_exact"] == 0.0
+    assert scored.components["answer_f1"] == 0.0
+    assert scored.components["judge_answer_correctness"] == 0.0
+    assert scored.components["judge_evidence_support"] == 0.0
+    assert scored.components["judge_search_quality"] == 0.0
+
+
+def test_required_grounding_accepts_supported_brave_url_when_source_ids_differ() -> None:
+    url = "https://en.wikipedia.org/wiki/Paris"
+    row = {
+        "answer": "Paris",
+        "supporting_ids": ["wiki:1"],
+        "search_required": True,
+        "evidence": [{"id": "wiki:1", "url": url}],
+    }
+    brave_result = result_with_url("brave:abc", url)
+    scored = score_search_reward(
+        row,
+        response("Paris [brave:abc]", [trace(results=[brave_result], provider="web")], 1),
+        "<|answer|>Paris <|citation|>brave:abc",
+        judge_score=JudgeScore(1.0, 0.75, 1.0, valid=True),
+    )
+
+    assert scored.components["answer_exact"] == 1.0
+    assert scored.components["answer_f1"] == 1.0
+    assert scored.components["citation_precision"] == 1.0
+    assert scored.components["citation_recall"] == 1.0
+    assert scored.components["citation_validity"] == 1.0
+    assert scored.components["judge_answer_correctness"] == 1.0
+    assert scored.components["judge_evidence_support"] == 0.75
+
+
+def test_legacy_supporting_ids_and_evidence_match_brave_by_canonical_url() -> None:
+    scored = score_search_reward(
+        {
+            "answer": "Paris",
+            "supporting_ids": ["wiki:1"],
+            "search_required": True,
+            "evidence": [
+                {
+                    "id": "wiki:1",
+                    "url": "https://en.wikipedia.org/wiki/Paris?utm_source=training",
+                }
+            ],
+        },
+        response(
+            "Paris [brave:abc]",
+            [
+                trace(
+                    results=[
+                        result_with_url("brave:abc", "https://en.wikipedia.org/wiki/Paris")
+                    ],
+                    provider="web",
+                )
+            ],
+            1,
+        ),
+        "<|answer|>Paris <|citation|>brave:abc",
+    )
+
+    assert scored.components["grounded_search"] == 1.0
+    assert scored.components["missing_required_grounding"] == 0.0
+    assert scored.components["citation_recall"] == 1.0
+    assert scored.components["answer_exact"] == 1.0
+
+
+def test_required_search_has_no_first_search_cost_but_penalizes_extra_searches() -> None:
+    row = {
+        "answer": "Paris",
+        "supporting_ids": ["doc:1"],
+        "search_required": True,
+    }
+    first = score_search_reward(
+        row,
+        response("Paris [doc:1]", [trace(results=[result()])], 1),
+        "<|answer|>Paris <|citation|>doc:1",
+    )
+    extra = score_search_reward(
+        row,
+        response(
+            "Paris [doc:1]",
+            [trace(results=[result()]), trace(results=[result("doc:2")], query="extra")],
+            2,
+        ),
+        "<|answer|>Paris <|citation|>doc:1",
+    )
+
+    assert first.components["search_cost"] == 0.0
+    assert extra.components["search_cost"] == 1.0
+
+
+def test_optional_question_keeps_no_search_answer_and_judge_path() -> None:
+    scored = score_search_reward(
+        {"answer": "Paris", "supporting_ids": [], "search_required": False},
+        response("Paris", [], 0),
+        "<|answer|>Paris",
+        judge_score=JudgeScore(0.5, 0.25, 1.0, valid=True),
+    )
+
+    assert scored.components["answer_exact"] == 1.0
+    assert scored.components["answer_f1"] == 1.0
+    assert scored.components["judge_answer_correctness"] == 0.5
+    assert scored.components["judge_evidence_support"] == 0.25
+    assert scored.components["search_cost"] == 0.0
+    assert scored.components["unnecessary_search"] == 0.0
 
 
 def test_search_reward_adds_only_valid_auxiliary_judge_components() -> None:
@@ -251,20 +388,20 @@ def test_search_reward_separates_support_from_validity_and_penalizes_behavior() 
 
 def test_query_recovery_requires_reformulation_and_correct_answer() -> None:
     scored = score_search_reward(
-        {"answer": "yes", "supporting_ids": []},
+        {"answer": "yes", "supporting_ids": ["doc:1"], "search_required": True},
         response(
             "yes",
             [trace("empty", query="first"), trace(results=[result()], query="second")],
             2,
         ),
-        "<|answer|>yes",
+        "<|answer|>yes <|citation|>doc:1",
     )
     assert scored.components["query_recovery"] == 1.0
 
     no_failure = score_search_reward(
-        {"answer": "yes", "supporting_ids": []},
+        {"answer": "yes", "supporting_ids": ["doc:1"], "search_required": True},
         response("yes", [trace(query="first"), trace(query="second")], 2),
-        "<|answer|>yes",
+        "<|answer|>yes <|citation|>doc:1",
     )
     assert no_failure.components["query_recovery"] == 0.0
 

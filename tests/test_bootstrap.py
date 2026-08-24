@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gpt2_reasoning_search import bootstrap as bootstrap_module
+from gpt2_reasoning_search.agent import TOOL_INSTRUCTION
 from gpt2_reasoning_search.bootstrap import (
     WIKIPEDIA_CONFIG,
     WIKIPEDIA_DATASET,
@@ -210,6 +211,8 @@ def test_worker_prepare_invokes_bootstrap_before_other_prepare_commands(tmp_path
         if path.suffix == ".bin":
             path.write_bytes(b"\0")
             path.with_suffix(".manifest.json").write_text("{}\n")
+        elif path.name == "trajectories.jsonl":
+            path.write_text(TOOL_INSTRUCTION + "\nready\n")
         else:
             path.write_text("ready\n")
     (data / "preparation-manifest.json").write_text("{}\n")
@@ -244,7 +247,7 @@ def test_worker_prepare_invokes_bootstrap_before_other_prepare_commands(tmp_path
     )
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
-    for command in ("bash", "date", "dirname", "mkdir", "rm", "tee"):
+    for command in ("bash", "date", "dirname", "grep", "mkdir", "rm", "tee"):
         target = shutil.which(command)
         assert target is not None
         (fake_bin / command).symlink_to(target)

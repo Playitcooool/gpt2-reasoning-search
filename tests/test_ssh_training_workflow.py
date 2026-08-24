@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from gpt2_reasoning_search.agent import TOOL_INSTRUCTION
+
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "train-ssh"
 SCRIPT_NAMES = ("setup.sh", "worker.sh", "status.sh")
@@ -36,7 +38,7 @@ def _write_executable(path: Path, body: str) -> None:
 def _fake_bin(tmp_path: Path, *system_commands: str) -> Path:
     directory = tmp_path / "fake-bin"
     directory.mkdir(exist_ok=True)
-    for command in ("bash", "dirname", *system_commands):
+    for command in ("bash", "dirname", "grep", *system_commands):
         target = shutil.which(command)
         assert target is not None, command
         (directory / command).symlink_to(target)
@@ -151,8 +153,9 @@ def _complete_index(path: Path) -> None:
 def _create_prepared_inputs(tmp_path: Path) -> None:
     inputs = tmp_path / "inputs"
     inputs.mkdir(exist_ok=True)
-    for name in ("tokenizer.json", "trajectories.jsonl", "rl.jsonl"):
+    for name in ("tokenizer.json", "rl.jsonl"):
         (inputs / name).write_text("ready\n")
+    (inputs / "trajectories.jsonl").write_text(TOOL_INSTRUCTION + "\nready\n")
     for name in ("reasoning.bin", "general.bin"):
         path = inputs / name
         path.write_bytes(b"\0")
@@ -395,7 +398,7 @@ def test_worker_rejects_empty_training_artifacts_and_partial_checkpoints(
 
     # A directory containing only one checkpoint file is not a completed final checkpoint.
     (outputs / "main" / "final" / "optimizer.pt").unlink()
-    (inputs / "trajectories.jsonl").write_text("ready\n")
+    (inputs / "trajectories.jsonl").write_text(TOOL_INSTRUCTION + "\nready\n")
     partial_config = _write_config(project, tmp_path, RUN_SMOKE=0, RUN_SFT=0, RUN_RL=0)
     partial = _run(
         [project / "scripts" / "ssh" / "worker.sh", "pretrain"],
@@ -643,7 +646,7 @@ def test_worker_prepare_rebuilds_raw_tokens_when_manifest_is_missing(tmp_path: P
     (inputs / "reasoning.bin").write_bytes(b"raw")
     (inputs / "general.bin").write_bytes(b"raw")
     (inputs / "wikipedia.jsonl").write_text("{\"id\": \"1\", \"text\": \"article\"}\n")
-    (inputs / "trajectories.jsonl").write_text("ready\n")
+    (inputs / "trajectories.jsonl").write_text(TOOL_INSTRUCTION + "\nready\n")
     _complete_index(inputs / "wiki-index")
     calls = tmp_path / "calls.log"
     fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
@@ -733,7 +736,7 @@ def test_incomplete_downstream_stage_returns_temporary_failure_for_afterok_chain
     inputs.mkdir()
     (inputs / "tokenizer.json").write_text("ready\n")
     if stage == "sft":
-        (inputs / "trajectories.jsonl").write_text("ready\n")
+        (inputs / "trajectories.jsonl").write_text(TOOL_INSTRUCTION + "\nready\n")
         _complete_checkpoint(outputs / "main" / "final")
     else:
         (inputs / "rl.jsonl").write_text("ready\n")
