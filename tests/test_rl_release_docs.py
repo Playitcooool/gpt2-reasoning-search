@@ -29,6 +29,42 @@ def test_release_version_is_consistent_across_package_cli_and_openapi() -> None:
     assert 'version = "0.3.0"' in (ROOT / "uv.lock").read_text()
 
 
+def test_qwen_multimodal_runtime_dependencies_are_declared_and_locked() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    direct_dependencies = set(project["project"]["dependencies"])
+    expected_specs = {
+        "pillow": ">=10.0.0",
+        "torch": ">=2.7.0",
+        "torchvision": ">=0.22.0",
+    }
+
+    for name, specifier in expected_specs.items():
+        assert f"{name}{specifier}" in direct_dependencies
+
+    root_package = next(
+        package
+        for package in lock["package"]
+        if package["name"] == "gpt2-reasoning-search"
+    )
+    locked_names = {dependency["name"] for dependency in root_package["dependencies"]}
+    assert set(expected_specs) <= locked_names
+
+    locked_specs = {
+        requirement["name"]: requirement["specifier"]
+        for requirement in root_package["metadata"]["requires-dist"]
+    }
+    assert {name: locked_specs[name] for name in expected_specs} == expected_specs
+
+    locked_versions = {
+        package["name"]: package["version"]
+        for package in lock["package"]
+        if package["name"] in expected_specs
+    }
+    assert set(locked_versions) == set(expected_specs)
+    assert all(version for version in locked_versions.values())
+
+
 def test_rl_cli_registers_documented_paths_options_and_safe_retrieval_defaults() -> None:
     command = get_command(app).commands["rl-search"]
     parameters = {parameter.name: parameter for parameter in command.params}
@@ -195,6 +231,8 @@ def test_auxiliary_judge_defaults_and_ablation_are_documented() -> None:
     assert "--llm-judge --judge-device cuda" in guide
     assert "--no-llm-judge" in guide
     assert "scores for answer correctness, evidence support, and search quality" in guide
+    assert "locked Qwen runtime" in guide
+    assert "Pillow and Torchvision" in guide
     assert "prompt injection" in security
     assert "judge" in security
 

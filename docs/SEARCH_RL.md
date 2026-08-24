@@ -88,6 +88,10 @@ The revision-pinned Qwen judge is enabled by default in the CLI. Use `--no-llm-j
 deterministic-only ablation; changing `--judge-model` also requires an explicit pinned
 `--judge-revision`.
 
+After pulling an update on an SSH server, run `./train-ssh setup` once before RL. It synchronizes the
+locked Qwen runtime, including the Pillow and Torchvision components required by this multimodal
+model; do not install them separately with system `pip`.
+
 Resume from a complete step checkpoint:
 
 ```bash
