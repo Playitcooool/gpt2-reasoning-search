@@ -7,11 +7,8 @@ import time
 from pathlib import Path
 
 import httpx
-import numpy as np
 import pytest
-from typer.testing import CliRunner
 
-from gpt2_reasoning_search.cli import app
 from gpt2_reasoning_search.retrieval import LocalWikipediaSearchProvider, build_wikipedia_index
 from gpt2_reasoning_search.schemas import SearchResult
 from gpt2_reasoning_search.search import (
@@ -57,17 +54,6 @@ def test_web_search_module_supports_direct_import() -> None:
     assert completed.returncode == 0, completed.stderr
 
 
-class FakeDenseEncoder:
-    def encode_documents(self, texts):
-        return np.asarray(
-            [[1.0, 0.0] if "Olympus" in text else [0.0, 1.0] for text in texts],
-            dtype=np.float32,
-        )
-
-    def encode_query(self, query):
-        return np.asarray([[1.0, 0.0] if "volcano" in query else [0.0, 1.0]], dtype=np.float32)
-
-
 def _result(identifier: str, url: str = "https://example.org/a") -> SearchResult:
     return SearchResult(
         id=identifier,
@@ -110,72 +96,50 @@ def test_reciprocal_rank_fusion_combines_rankings_and_validates_constant() -> No
         reciprocal_rank_fusion([["a"]], constant=0)
 
 
-def test_index_build_streams_batches_writes_manifest_and_cleans_failure_atomically(
-    tmp_path: Path, monkeypatch
-) -> None:
-    class RecordingEncoder(FakeDenseEncoder):
-        def __init__(self):
-            self.batch_sizes = []
-
-        def encode_documents(self, texts):
-            self.batch_sizes.append(len(texts))
-            return super().encode_documents(texts)
-
-    encoder = RecordingEncoder()
+def test_bm25_index_has_a_small_manifest_and_no_dense_artifacts(tmp_path: Path) -> None:
     index = tmp_path / "index"
-    consumed = []
+    assert build_wikipedia_index(DOCUMENTS, index) == 2
 
-    class FakeHNSW:
-        def __init__(self, **settings):
-            self.settings = settings
-            self.rows = []
+    manifest = json.loads((index / "retrieval-manifest.json").read_text())
+    assert manifest == {"chunks": 2, "format_version": 3, "lexical": "tantivy-bm25"}
+    assert (index / "lexical").is_dir()
+    assert (index / "metadata.sqlite3").is_file()
+    assert not (index / "dense.usearch").exists()
+    assert not (index / "dense").exists()
 
-        def add(self, keys, rows):
-            self.rows.extend(zip(keys.tolist(), rows.tolist(), strict=True))
 
-        def save(self, path):
-            Path(path).write_bytes(b"fake-usearch")
-
-    monkeypatch.setattr("gpt2_reasoning_search.retrieval.VectorIndex", FakeHNSW)
+def test_bm25_index_build_failure_is_atomic_and_streams_documents(tmp_path: Path) -> None:
+    consumed: list[str] = []
 
     def stream():
         for document in DOCUMENTS:
             consumed.append(document["id"])
             yield document
-
-    count = build_wikipedia_index(stream(), index, dense_encoder=encoder, embedding_batch_size=1)
-    assert count == 2
-    assert consumed == ["mars", "ocean"]
-    assert encoder.batch_sizes == [1, 1]
-    manifest = json.loads((index / "retrieval-manifest.json").read_text())
-    assert manifest == {
-        "candidate_multiplier": 10,
-        "chunks": 2,
-        "dense": True,
-        "dense_backend": "usearch-hnsw",
-        "embedding_model": {
-            "name": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",
-            "revision": "b207367332321f8e44f96e224ef15bc607f4dbf0",
-        },
-        "format_version": 2,
-        "lexical": "tantivy-bm25",
-        "reranker_model": {
-            "name": "cross-encoder/ms-marco-MiniLM-L6-v2",
-            "revision": "233902d25c440f23af6f7d6e94d2946bac0bee0a",
-        },
-        "rrf_constant": 60,
-    }
-    assert (index / "dense.usearch").is_file()
-
-    class BrokenEncoder(FakeDenseEncoder):
-        def encode_documents(self, texts):
-            raise RuntimeError("encoder failed")
+            if document["id"] == "mars":
+                raise RuntimeError("source failed")
 
     failed = tmp_path / "failed-index"
-    with pytest.raises(RuntimeError, match="encoder failed"):
-        build_wikipedia_index(DOCUMENTS, failed, dense_encoder=BrokenEncoder())
+    with pytest.raises(RuntimeError, match="source failed"):
+        build_wikipedia_index(stream(), failed)
+    assert consumed == ["mars"]
     assert not failed.exists()
     assert not list(tmp_path.glob(".failed-index-*"))
+
+
+def test_retrieval_module_has_no_dense_retrieval_dependencies_or_symbols() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "src/gpt2_reasoning_search/retrieval.py"
+    ).read_text()
+    for forbidden in (
+        "usearch",
+        "sentence_transformers",
+        "SentenceTransformer",
+        "VectorIndex",
+        "dense_encoder",
+        "reranker",
+        "reciprocal_rank_fusion",
+    ):
+        assert forbidden not in source
 
 
 def test_index_build_creates_missing_output_parents(tmp_path: Path) -> None:
@@ -184,44 +148,7 @@ def test_index_build_creates_missing_output_parents(tmp_path: Path) -> None:
     assert (output / "retrieval-manifest.json").is_file()
 
 
-def test_real_usearch_hnsw_and_hybrid_fusion_in_clean_process(tmp_path: Path) -> None:
-    script = r"""
-import asyncio, json, sys
-from pathlib import Path
-import numpy as np
-from gpt2_reasoning_search.retrieval import LocalWikipediaSearchProvider, build_wikipedia_index
-class Encoder:
-    def encode_documents(self, texts):
-        rows = [[1., 0.] if "Olympus" in x else [0., 1.] for x in texts]
-        return np.asarray(rows, dtype=np.float32)
-    def encode_query(self, query):
-        return np.asarray([[1., 0.] if "volcano" in query else [0., 1.]], dtype=np.float32)
-docs = [
- {"id":"mars","title":"Mars Mission","url":"https://example.org/mars",
-  "text":"Mars is red and hosts Olympus Mons."},
- {"id":"ocean","title":"Ocean","url":"https://example.org/ocean",
-  "text":"The Pacific is Earth's largest ocean. Mars appears here."},
-]
-target = Path(sys.argv[1])
-build_wikipedia_index(docs, target, dense_encoder=Encoder(), embedding_batch_size=1)
-provider = LocalWikipediaSearchProvider(target, dense_encoder=Encoder())
-results = asyncio.run(provider.search("volcano", 2))
-print(json.dumps({"ids":[r.id for r in results], "scores":[r.score_components for r in results]}))
-provider.close()
-"""
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path / "real-index")],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    assert payload["ids"][0] == "mars:0"
-    assert payload["scores"][0]["dense"] > 0
-    assert payload["scores"][0]["rrf"] > 0
-
-
-def test_lexical_title_boost_reranking_async_and_close(tmp_path: Path) -> None:
+def test_bm25_title_boost_async_and_close(tmp_path: Path) -> None:
     index = tmp_path / "index"
     build_wikipedia_index(DOCUMENTS, index)
 
@@ -229,63 +156,25 @@ def test_lexical_title_boost_reranking_async_and_close(tmp_path: Path) -> None:
     title_results = asyncio.run(lexical.search("Mars Mission", top_k=2))
     assert title_results[0].id == "mars:0"
     assert title_results[0].score_components["bm25"] > 0
-    lexical.close()
-    with pytest.raises(sqlite3.ProgrammingError):
-        lexical._metadata_rows([0])
 
-    class ReverseReranker:
-        def rerank(self, query, candidates, top_k):
-            return list(reversed(candidates))[:top_k]
-
-    reranked = LocalWikipediaSearchProvider(index, reranker=ReverseReranker())
-    baseline = reranked._search_sync("Mars", 2)
-    assert baseline[0].id == "ocean:0"
-
-    original = reranked._search_sync
+    original = lexical._search_sync
 
     def slow_search(query, top_k):
         time.sleep(0.05)
         return original(query, top_k)
 
-    reranked._search_sync = slow_search
+    lexical._search_sync = slow_search
 
     async def prove_nonblocking():
-        search_task = asyncio.create_task(reranked.search("Mars", 1))
+        search_task = asyncio.create_task(lexical.search("Mars", 1))
         await asyncio.sleep(0.005)
         assert not search_task.done()
         return await search_task
 
     assert asyncio.run(prove_nonblocking())
-    reranked.close()
-
-
-def test_provider_disabled_dense_retrieval_does_not_restore_or_load_encoder(
-    tmp_path: Path, monkeypatch
-) -> None:
-    index = tmp_path / "index"
-    build_wikipedia_index(
-        DOCUMENTS, index, dense_encoder=FakeDenseEncoder(), embedding_batch_size=1
-    )
-    assert (index / "dense.usearch").is_file()
-
-    class FailingVectorIndex:
-        @staticmethod
-        def restore(_path):
-            raise AssertionError("dense index should not be restored")
-
-    class FailingEncoder:
-        def __init__(self, *_args, **_kwargs):
-            raise AssertionError("dense encoder should not be loaded")
-
-    monkeypatch.setattr("gpt2_reasoning_search.retrieval.VectorIndex", FailingVectorIndex)
-    monkeypatch.setattr(
-        "gpt2_reasoning_search.retrieval.SentenceTransformerEncoder", FailingEncoder
-    )
-
-    provider = LocalWikipediaSearchProvider(index, enable_dense=False)
-    assert provider.dense_index is None
-    assert provider.dense_encoder is None
-    provider.close()
+    lexical.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        lexical._metadata_rows([0])
 
 
 def test_sqlite_cache_hit_expiry_and_close(tmp_path: Path, monkeypatch) -> None:
@@ -550,65 +439,3 @@ def test_web_fetcher_concurrency_bound() -> None:
     asyncio.run(fetcher.enrich(results))
     assert peak == 2
     asyncio.run(client.aclose())
-
-
-def test_build_index_cli_lexical_only_and_hybrid_do_not_download_when_mocked(
-    tmp_path: Path, monkeypatch
-) -> None:
-    documents = tmp_path / "docs.jsonl"
-    documents.write_text(json.dumps(DOCUMENTS[0]) + "\n")
-    config = tmp_path / "retrieval.json"
-    config.write_text(
-        json.dumps(
-            {
-                "embedding_model": {"name": "pinned", "revision": "revision"},
-                "reranker_model": {"name": "reranker", "revision": "revision"},
-            }
-        )
-    )
-    calls = []
-
-    class FakeEncoder:
-        def __init__(self, *args):
-            calls.append(("encoder", args))
-
-    def fake_build(documents, output, *, dense_encoder, retrieval_config):
-        calls.append(("build", list(documents), output, dense_encoder, retrieval_config))
-        return 1
-
-    monkeypatch.setattr("gpt2_reasoning_search.cli.SentenceTransformerEncoder", FakeEncoder)
-    monkeypatch.setattr("gpt2_reasoning_search.cli.build_wikipedia_index", fake_build)
-    runner = CliRunner()
-
-    lexical = runner.invoke(
-        app,
-        [
-            "build-index",
-            str(documents),
-            "--output",
-            str(tmp_path / "lexical"),
-            "--lexical-only",
-            "--retrieval-config",
-            str(config),
-        ],
-    )
-    assert lexical.exit_code == 0
-    assert calls[-1][3] is None
-
-    hybrid = runner.invoke(
-        app,
-        [
-            "build-index",
-            str(documents),
-            "--output",
-            str(tmp_path / "hybrid"),
-            "--no-lexical-only",
-            "--retrieval-config",
-            str(config),
-            "--embedding-device",
-            "cpu",
-        ],
-    )
-    assert hybrid.exit_code == 0
-    assert calls[-2] == ("encoder", ("pinned", "revision", "cpu"))
-    assert isinstance(calls[-1][3], FakeEncoder)

@@ -62,7 +62,6 @@ def _write_config(project: Path, tmp_path: Path, **overrides: object) -> Path:
         "WIKI_INDEX": data / "wiki-index",
         "REASONING_TOKEN_CAP": 100,
         "GENERAL_TOKEN_CAP": 100,
-        "LEXICAL_ONLY": 1,
         "TRAIN_PROFILE": "8h",
         # Tests use isolated temporary paths; the production default rejects these by design.
         "ALLOW_CUSTOM_PATHS": 1,
@@ -759,7 +758,7 @@ def test_incomplete_downstream_stage_returns_temporary_failure_for_afterok_chain
     assert "Re-submit the same stage to resume" in result.stdout + result.stderr
 
 
-def test_worker_rl_defaults_to_lexical_retrieval_and_allows_hybrid_opt_in(tmp_path: Path) -> None:
+def test_worker_rl_uses_local_bm25_without_dense_or_hybrid_options(tmp_path: Path) -> None:
     project = _copy_workflow(tmp_path)
     _create_prepared_inputs(tmp_path)
     _complete_checkpoint(tmp_path / "outputs" / "sft")
@@ -777,22 +776,15 @@ def test_worker_rl_defaults_to_lexical_retrieval_and_allows_hybrid_opt_in(tmp_pa
     )
     assert lexical.returncode == 75
     lexical_log = calls.read_text()
-    assert "ARG <--lexical-only>" in lexical_log
-    assert "ARG <--hybrid-retrieval>" not in lexical_log
-
-    calls.write_text("")
-    hybrid_config = _write_config(project, tmp_path, RUN_SMOKE=0, RL_LEXICAL_ONLY=0)
-    hybrid = _run(
-        [project / "scripts" / "ssh" / "worker.sh", "rl"],
-        project=project,
-        config=hybrid_config,
-        path=str(fake_bin),
-        extra_env={"FAKE_CALLS": str(calls)},
-    )
-    assert hybrid.returncode == 75
-    hybrid_log = calls.read_text()
-    assert "ARG <--hybrid-retrieval>" in hybrid_log
-    assert "ARG <--lexical-only>" not in hybrid_log
+    assert "ARG <--search-mode>" in lexical_log
+    assert "ARG <local>" in lexical_log
+    for obsolete in (
+        "--lexical-only",
+        "--hybrid-retrieval",
+        "--enable-reranker",
+        "--retrieval-device",
+    ):
+        assert f"ARG <{obsolete}>" not in lexical_log
 
 
 def test_worker_rl_uses_web_only_when_brave_key_is_present(tmp_path: Path) -> None:
@@ -830,6 +822,51 @@ def test_worker_rl_uses_web_only_when_brave_key_is_present(tmp_path: Path) -> No
     assert "ARG <--search-mode>" in live_log
     assert "ARG <web>" in live_log
     assert "ARG <local>" not in live_log
+    for obsolete in (
+        "--lexical-only",
+        "--hybrid-retrieval",
+        "--enable-reranker",
+        "--retrieval-device",
+    ):
+        assert f"ARG <{obsolete}>" not in live_log
+
+
+@pytest.mark.parametrize("stage", ["prepare", "rl"])
+def test_worker_removes_only_the_exact_legacy_dense_artifact(tmp_path: Path, stage: str) -> None:
+    project = _copy_workflow(tmp_path)
+    _create_prepared_inputs(tmp_path)
+    index = tmp_path / "inputs" / "wiki-index"
+    exact = index / "dense.usearch"
+    exact.write_bytes(b"obsolete")
+    (index / "dense.usearch.bak").write_bytes(b"keep")
+    (index / "dense.usearch.tmp").write_bytes(b"keep")
+    nested = index / "nested"
+    nested.mkdir()
+    (nested / "dense.usearch").write_bytes(b"keep")
+    sibling = tmp_path / "inputs" / "other-index"
+    sibling.mkdir()
+    (sibling / "dense.usearch").write_bytes(b"keep")
+    if stage == "rl":
+        _complete_checkpoint(tmp_path / "outputs" / "sft")
+    config = _write_config(project, tmp_path, RUN_SMOKE=0)
+    calls = tmp_path / "calls.log"
+    fake_bin = _fake_bin(tmp_path, "mkdir", "tee", "date", "sort", "rm")
+    _fake_recorder(fake_bin / "uv", "uv")
+
+    result = _run(
+        [project / "scripts" / "ssh" / "worker.sh", stage],
+        project=project,
+        config=config,
+        path=str(fake_bin),
+        extra_env={"FAKE_CALLS": str(calls)},
+    )
+
+    assert result.returncode in (0, 75), result.stderr
+    assert not exact.exists()
+    assert (index / "dense.usearch.bak").read_bytes() == b"keep"
+    assert (index / "dense.usearch.tmp").read_bytes() == b"keep"
+    assert (nested / "dense.usearch").read_bytes() == b"keep"
+    assert (sibling / "dense.usearch").read_bytes() == b"keep"
 
 
 def test_custom_all_requires_prepared_artifacts_before_starting_gpu_stages(tmp_path: Path) -> None:

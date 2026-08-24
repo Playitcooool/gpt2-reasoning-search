@@ -81,18 +81,15 @@ uv run gpt2-reasoning-search rl-search \
   --llm-judge --judge-device cuda
 ```
 
-By default, RL uses only the frozen local index. To deliberately train with live Brave results,
-export `BRAVE_SEARCH_API_KEY` and use `--search-mode web`. Successful results are cached for 30 days
-inside the RL output directory. If Brave reaches a quota/rate limit or becomes unavailable, it is
-disabled for the rest of that run and each attempted web search falls back to local Wikipedia rather
-than aborting the training job. This makes the run resilient, but changes its retrieval environment;
-record `web_searches` and `local_fallbacks` from `metrics.jsonl` and do not treat it as a fully
-reproducible benchmark.
+Export `BRAVE_SEARCH_API_KEY` and use `--search-mode web` to train against live Brave results.
+Successful results are cached for 30 days inside the RL output directory. If Brave reaches a
+quota/rate limit or becomes unavailable, it is disabled for the rest of that run and each attempted
+web search falls back to compact local BM25 retrieval rather than aborting the training job. This
+makes the run resilient, but changes its retrieval environment; record `web_searches` and
+`local_fallbacks` from `metrics.jsonl` and do not treat it as a fully reproducible benchmark.
 
-RL defaults to bounded BM25 retrieval (`--lexical-only`), so a large optional dense Wikipedia index
-is not mapped into the job's host memory. Use `--hybrid-retrieval` only after measuring CPU-RAM
-headroom; it loads the dense vector index as well. The reranker is disabled by default for
-throughput and can be enabled with `--enable-reranker`.
+There is no dense-vector index or reranker. The compact local BM25 index is retained solely as an
+offline fallback for API outage and quota handling.
 The revision-pinned Qwen judge is enabled by default in the CLI. Use `--no-llm-judge` for a matched
 deterministic-only ablation; changing `--judge-model` also requires an explicit pinned
 `--judge-revision`.

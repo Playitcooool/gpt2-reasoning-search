@@ -28,7 +28,7 @@ def _agent_from_environment() -> SearchAgent | None:
     if not (checkpoint and tokenizer and index):
         return None
     runner = ModelRunner(Path(checkpoint), Path(tokenizer))
-    local = LocalWikipediaSearchProvider(Path(index), enable_reranker=True)
+    local = LocalWikipediaSearchProvider(Path(index))
     brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
     cache_path = Path(os.getenv("GRS_SEARCH_CACHE", "artifacts/search-cache.sqlite3"))
     web = (

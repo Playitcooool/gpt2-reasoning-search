@@ -4,9 +4,9 @@ An English research prototype for training a modernized GPT-2-style decoder from
 initialization, with a deliberately unusual **70% verified-reasoning / 30% educational-text**
 pretraining mixture, followed by supervised and reinforcement-learned search-tool training.
 
-The repository contains reproducible data preparation, tokenizer, model, pretraining, hybrid
-Wikipedia retrieval, optional Brave web search, tool SFT, online search RL, evaluation, CLI, and
-FastAPI serving.
+The repository contains reproducible data preparation, tokenizer, model, pretraining, a compact
+Wikipedia BM25 fallback, Brave web search, tool SFT, online search RL, evaluation, CLI, and FastAPI
+serving.
 Downloaded data and trained weights are not included. A 350M model trained for one H100-day should
 be treated as a narrow experiment, not a production-grade general assistant.
 
@@ -14,8 +14,8 @@ be treated as a narrow experiment, not a production-grade general assistant.
 
 The model and systems stack follows common current practice: RoPE, RMSNorm, SwiGLU, grouped-query
 attention, PyTorch SDPA/Flash Attention, bf16, fused AdamW, gradient checkpointing, KV-cached
-generation, SafeTensors checkpoints, BM25+dense HNSW retrieval, reciprocal-rank fusion, cross-encoder
-reranking, validated JSON tools, bounded retries, caching, and service backpressure.
+generation, SafeTensors checkpoints, BM25 fallback retrieval, validated JSON tools, bounded retries,
+caching, and service backpressure.
 
 The intentional research variable is the **data mixture**. Pretraining consumes exactly 70%
 reasoning and 30% general text by non-padding tokens. Equal-token 124M proxies at 0%, 30%, and 70%

@@ -70,9 +70,6 @@ class SearchRLConfig:
     weight_decay: float = 0.1
     save_every_steps: int = 100
     seed: int = 42
-    enable_dense_retrieval: bool = False
-    enable_reranker: bool = False
-    retrieval_device: str = "cpu"
     judge_model: str | None = None
     judge_revision: str | None = None
     judge_device: str = "cuda"
@@ -96,8 +93,6 @@ class SearchRLConfig:
             raise ValueError("invalid sampling configuration")
         if self.save_every_steps < 1:
             raise ValueError("save_every_steps must be positive")
-        if self.retrieval_device not in {"cpu", "cuda"}:
-            raise ValueError("retrieval_device must be cpu or cuda")
         if self.judge_device not in {"cpu", "cuda"}:
             raise ValueError("judge_device must be cpu or cuda")
         if self.time_budget_hours is not None and (
@@ -399,12 +394,7 @@ def train_search_rl(config: SearchRLConfig, reward_weights: RewardWeights | None
         maximum_new_tokens=config.max_new_tokens,
     )
     config.output_directory.mkdir(parents=True, exist_ok=True)
-    provider = LocalWikipediaSearchProvider(
-        config.index_directory,
-        enable_dense=config.enable_dense_retrieval,
-        enable_reranker=config.enable_reranker,
-        model_device=config.retrieval_device,
-    )
+    provider = LocalWikipediaSearchProvider(config.index_directory)
     web_provider = (
         BraveWebSearchProvider(
             brave_key,

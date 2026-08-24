@@ -405,9 +405,12 @@ def test_documented_release_commands_and_formats_match_cli() -> None:
     assert ".npy" not in readme
     assert ".npy" not in data
     assert "reasoning.bin" in readme and "general.bin" in readme
-    assert "BM25+dense HNSW" in readme
-    assert "Tantivy BM25 + SentenceTransformer" in architecture
-    assert "lexical-only build is available" in architecture
+    assert "BM25" in readme
+    normalized_architecture = " ".join(architecture.split()).lower()
+    assert "tantivy" in normalized_architecture and "bm25" in normalized_architecture
+    assert "no dense-vector index" in normalized_architecture
+    assert "sentence-transformer" not in normalized_architecture
+    assert "usearch" not in normalized_architecture
     assert "score-lm" in readme
     assert "benchmark-grounded" in readme
     assert "Recall/MRR/nDCG" in evaluation

@@ -56,7 +56,6 @@ def config(tmp_path: Path, **overrides: object) -> SearchRLConfig:
         {"max_new_tokens": 0},
         {"grad_clip": 0},
         {"save_every_steps": 0},
-        {"retrieval_device": "mps"},
         {"judge_device": "mps"},
         {"judge_max_input_tokens": 255},
         {"judge_max_new_tokens": 15},
@@ -610,7 +609,6 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
         group_size=2,
         save_every_steps=2,
         resume_from=tmp_path / "resume",
-        retrieval_device="cpu",
         judge_model="Qwen/Qwen3.5-2B",
         judge_revision="a" * 40,
         judge_device="cpu",
@@ -626,8 +624,7 @@ def test_train_search_rl_resume_checkpoints_metrics_reference_and_provider_clean
     assert loaded_resume == [policy]
     assert reference.training is False
     assert all(not parameter.requires_grad for parameter in reference.parameters())
-    assert providers[0].kwargs["model_device"] == "cpu"
-    assert providers[0].kwargs["enable_reranker"] is False
+    assert providers[0].kwargs == {}
     assert providers[0].closed == 1
     assert len(judges) == 1
     assert judges[0].model_name == "Qwen/Qwen3.5-2B"

@@ -26,18 +26,16 @@
 
 ## Retrieval path
 
-Local retrieval is a retrieve-then-rerank pipeline:
+Live Brave search is the external knowledge provider. It is protected by a shared asynchronous
+client, canonical URLs and stable hashed identifiers, a TTL SQLite cache, bounded retry/backoff,
+concurrent page enrichment, robots policy, content-type/size limits, main-text extraction, and
+public-address checks on every redirect hop.
 
-`query -> Tantivy BM25 + SentenceTransformer dense query -> USearch HNSW -> RRF -> CrossEncoder`
+`query -> Brave Search -> fetched, sanitized evidence -> model answer with returned-source citations`
 
-The local index stores text metadata in SQLite and writes lexical/vector artifacts atomically. A
-lexical-only build is available for deterministic tests and machines that should not download
-embedding models.
-
-Live retrieval calls Brave Search through one shared asynchronous client. Results use canonical
-URLs and stable hashed identifiers, a TTL SQLite cache, bounded retry/backoff, concurrent page
-enrichment, robots policy, content-type/size limits, main-text extraction, and public-address checks
-on every redirect hop.
+The local index stores text metadata in SQLite and writes a compact Tantivy BM25 artifact atomically.
+It is used only when Brave is absent, rate-limited, or otherwise unavailable; there is no dense-vector
+index, embedding model, reciprocal-rank fusion, or reranker.
 
 ## Tool loop
 

@@ -64,10 +64,8 @@ def test_build_load_and_retrieve_local_bm25_index(tmp_path: Path) -> None:
     provider = LocalWikipediaSearchProvider(index)
     results = asyncio.run(provider.search("red planet volcano", top_k=2))
 
-    assert metadata["format_version"] == 2
-    assert metadata["chunks"] == 2
-    assert metadata["lexical"] == "tantivy-bm25"
-    assert metadata["dense"] is False
+    assert metadata == {"chunks": 2, "format_version": 3, "lexical": "tantivy-bm25"}
+    assert not (index / "dense.usearch").exists()
     assert results[0].id == "mars:0"
     assert results[0].title == "Mars"
     assert results[0].url == "https://example.test/mars"

@@ -65,6 +65,30 @@ def test_qwen_multimodal_runtime_dependencies_are_declared_and_locked() -> None:
     assert all(version for version in locked_versions.values())
 
 
+def test_retrieval_dependency_and_config_surface_is_bm25_only() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    direct_dependencies = {dependency.split("<", 1)[0].split(">", 1)[0].split("=", 1)[0]
+                           for dependency in project["project"]["dependencies"]}
+    assert "tantivy" in direct_dependencies
+    assert "sentence-transformers" not in direct_dependencies
+    assert "usearch" not in direct_dependencies
+    locked_names = {package["name"] for package in lock["package"]}
+    assert "tantivy" in locked_names
+    assert "sentence-transformers" not in locked_names
+    assert "usearch" not in locked_names
+    assert not (ROOT / "config" / "retrieval.json").exists()
+
+    for path in (
+        ROOT / "README.md",
+        ROOT / "docs" / "ARCHITECTURE.md",
+        ROOT / "docs" / "SEARCH_RL.md",
+    ):
+        text = path.read_text().lower()
+        assert "sentence-transformers" not in text
+        assert "usearch" not in text
+
+
 def test_rl_cli_registers_documented_paths_options_and_safe_retrieval_defaults() -> None:
     command = get_command(app).commands["rl-search"]
     parameters = {parameter.name: parameter for parameter in command.params}
@@ -82,8 +106,6 @@ def test_rl_cli_registers_documented_paths_options_and_safe_retrieval_defaults()
         "learning_rate": "--learning-rate",
         "kl_coefficient": "--kl-coefficient",
         "resume_from": "--resume-from",
-        "enable_reranker": "--enable-reranker",
-        "retrieval_device": "--retrieval-device",
         "llm_judge": "--llm-judge",
         "judge_model": "--judge-model",
         "judge_revision": "--judge-revision",
@@ -100,17 +122,26 @@ def test_rl_cli_registers_documented_paths_options_and_safe_retrieval_defaults()
     assert parameters["group_size"].default == 4
     assert parameters["max_searches"].default == 3
     assert parameters["search_mode"].default == "local"
-    assert parameters["lexical_only"].default is True
-    assert "--lexical-only" in parameters["lexical_only"].opts
-    assert "--hybrid-retrieval" in parameters["lexical_only"].secondary_opts
-    assert parameters["enable_reranker"].default is False
-    assert parameters["retrieval_device"].default == "cpu"
     assert parameters["llm_judge"].default is True
     assert "--no-llm-judge" in parameters["llm_judge"].secondary_opts
     assert parameters["judge_model"].default == DEFAULT_QWEN_JUDGE_MODEL
     assert parameters["judge_revision"].default is None
     assert re.fullmatch(r"[0-9a-f]{40}", DEFAULT_QWEN_JUDGE_REVISION)
     assert parameters["judge_device"].default == "cuda"
+    all_options = {
+        option
+        for parameter in command.params
+        for option in (*parameter.opts, *parameter.secondary_opts)
+    }
+    for obsolete in (
+        "--lexical-only",
+        "--hybrid-retrieval",
+        "--enable-reranker",
+        "--retrieval-device",
+        "--retrieval-config",
+        "--embedding-device",
+    ):
+        assert obsolete not in all_options
 
 
 def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
@@ -147,7 +178,6 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
 
     enabled = CliRunner().invoke(app, base_args)
     disabled = CliRunner().invoke(app, [*base_args, "--no-llm-judge"])
-    hybrid = CliRunner().invoke(app, [*base_args, "--hybrid-retrieval", "--no-llm-judge"])
     invalid_mode = CliRunner().invoke(
         app, [*base_args, "--search-mode", "invalid", "--no-llm-judge"]
     )
@@ -162,9 +192,10 @@ def test_rl_cli_enables_pinned_judge_by_default_and_supports_ablation(
     assert disabled.exit_code == 0
     assert captured[1].judge_model is None
     assert captured[1].judge_revision is None
-    assert captured[0].enable_dense_retrieval is False
-    assert hybrid.exit_code == 0
-    assert captured[2].enable_dense_retrieval is True
+    assert captured[0].search_mode == "local"
+    assert captured[1].search_mode == "local"
+    assert CliRunner().invoke(app, [*base_args, "--lexical-only"]).exit_code != 0
+    assert CliRunner().invoke(app, [*base_args, "--hybrid-retrieval"]).exit_code != 0
     assert invalid_mode.exit_code != 0
     assert isinstance(invalid_mode.exception, ValueError)
     assert "RL search_mode must be local, web, or auto" in str(invalid_mode.exception)
@@ -198,12 +229,11 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
     assert "frozen copy of the tool-SFT checkpoint" in rl_guide
     assert "The reference always remains the original `--checkpoint`" in rl_guide
     assert "epoch, prompt cursor, rollout count, and action-token count resume" in rl_guide
-    assert "RL defaults to bounded BM25 retrieval (`--lexical-only`)" in rl_guide
-    assert "Use `--hybrid-retrieval` only after measuring CPU-RAM" in rl_guide
-    assert "reranker is disabled by default" in rl_guide
+    assert "There is no dense-vector index or reranker" in rl_guide
+    assert "compact local BM25 index" in rl_guide
     assert "Use only the frozen local index for RL" not in rl_guide
     for term in (
-        "By default, RL uses only the frozen local index.",
+        "The frozen local index is the default for RL.",
         "BRAVE_SEARCH_API_KEY",
         "--search-mode web",
         "web_searches",
@@ -212,7 +242,7 @@ def test_search_rl_documentation_matches_local_training_and_checkpoint_behavior(
         assert term in rl_guide
     normalized_architecture = " ".join(architecture.split())
     assert "Search RL samples grouped online trajectories" in normalized_architecture
-    assert "Live retrieval calls Brave Search" in architecture
+    assert "query -> Brave Search -> fetched, sanitized evidence" in architecture
     assert "grouped online trajectories against the frozen local index. Group-normalized" not in (
         normalized_architecture
     )

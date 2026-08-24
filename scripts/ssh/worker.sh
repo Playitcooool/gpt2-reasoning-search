@@ -118,6 +118,14 @@ wiki_index_ready() {
     && -f "$WIKI_INDEX/retrieval-manifest.json" ]]
 }
 
+remove_obsolete_dense_index() {
+  local dense_artifact="$WIKI_INDEX/dense.usearch"
+  if [[ -f "$dense_artifact" ]]; then
+    rm -f "$dense_artifact"
+    echo "Removed obsolete dense-vector index: $dense_artifact"
+  fi
+}
+
 checkpoint_complete() {
   local directory="$1"
   [[ -f "$directory/model.safetensors" && -f "$directory/optimizer.pt" \
@@ -242,15 +250,11 @@ run_prepare() {
   fi
   if ! wiki_index_ready; then
     require_nonempty_file "$WIKIPEDIA_JSONL"
-    local index_args=()
-    if [[ "${LEXICAL_ONLY:-0}" == "1" ]]; then
-      index_args=(--lexical-only)
-    fi
     local args=(uv run --locked gpt2-reasoning-search build-index "$WIKIPEDIA_JSONL" \
-      --output "$WIKI_INDEX" --embedding-device cpu)
-    if ((${#index_args[@]} > 0)); then args+=("${index_args[@]}"); fi
+      --output "$WIKI_INDEX")
     "${args[@]}"
   fi
+  remove_obsolete_dense_index
   if [[ ! -s "$TRAJECTORIES" ]]; then
     require_nonempty_file "$GROUNDED_QUESTIONS"
     uv run --locked gpt2-reasoning-search make-trajectories "$GROUNDED_QUESTIONS" \
@@ -370,14 +374,11 @@ run_rl() {
     echo "Missing or incomplete Wikipedia index: $WIKI_INDEX" >&2
     exit 2
   }
+  remove_obsolete_dense_index
   set_resume_args "$RL_OUTPUT"
   local judge_args=(--llm-judge --judge-device cuda)
   if [[ "${USE_LLM_JUDGE:-1}" == "0" ]]; then
     judge_args=(--no-llm-judge)
-  fi
-  local retrieval_args=(--lexical-only)
-  if [[ "${RL_LEXICAL_ONLY:-1}" == "0" ]]; then
-    retrieval_args=(--hybrid-retrieval)
   fi
   local search_args=(--search-mode local)
   if [[ -n "${BRAVE_SEARCH_API_KEY:-}" ]]; then
@@ -389,7 +390,6 @@ run_rl() {
     --prompts "$RL_PROMPTS" --index "$WIKI_INDEX" --output "$RL_OUTPUT" \
     --epochs "$RL_EPOCHS" --time-budget-hours "$RL_HOURS" \
     --group-size "$RL_GROUP_SIZE" --max-searches 3 \
-    "${retrieval_args[@]}" \
     "${search_args[@]}" \
     "${judge_args[@]}")
   if ((${#RESUME_ARGS[@]} > 0)); then args+=("${RESUME_ARGS[@]}"); fi

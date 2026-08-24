@@ -105,14 +105,49 @@ def test_rl_search_help_registers_training_options() -> None:
         "time_budget_hours": "--time-budget-hours",
         "group_size": "--group-size",
         "max_searches": "--max-searches",
+        "search_mode": "--search-mode",
         "learning_rate": "--learning-rate",
         "kl_coefficient": "--kl-coefficient",
         "resume_from": "--resume-from",
-        "enable_reranker": "--enable-reranker",
-        "retrieval_device": "--retrieval-device",
+        "llm_judge": "--llm-judge",
+        "judge_model": "--judge-model",
+        "judge_revision": "--judge-revision",
+        "judge_device": "--judge-device",
     }
     for name, option in expected.items():
         assert option in parameters[name].opts
+
+    all_options = {
+        option
+        for parameter in command.params
+        for option in (*parameter.opts, *parameter.secondary_opts)
+    }
+    for obsolete in (
+        "--lexical-only",
+        "--hybrid-retrieval",
+        "--enable-reranker",
+        "--retrieval-device",
+        "--retrieval-config",
+        "--embedding-device",
+    ):
+        assert obsolete not in all_options
+
+    build_index = get_command(app).commands["build-index"]
+    build_options = {
+        option
+        for parameter in build_index.params
+        for option in (*parameter.opts, *parameter.secondary_opts)
+    }
+    assert "--output" in build_options
+    for obsolete in (
+        "--lexical-only",
+        "--hybrid-retrieval",
+        "--enable-reranker",
+        "--retrieval-device",
+        "--retrieval-config",
+        "--embedding-device",
+    ):
+        assert obsolete not in build_options
 
 
 def test_training_commands_default_to_seven_and_a_half_hour_budget() -> None:
